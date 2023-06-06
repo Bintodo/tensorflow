@@ -1,13 +1,12 @@
 # Description:
 #   Kernel tests for Boosted Trees.
 
+load("//tensorflow:tensorflow.bzl", "tf_py_test")
+
 package(
     default_visibility = ["//tensorflow:internal"],
+    licenses = ["notice"],  # Apache 2.0
 )
-
-licenses(["notice"])  # Apache 2.0
-
-load("//tensorflow:tensorflow.bzl", "tf_py_test")
 
 filegroup(
     name = "all_files",
@@ -34,6 +33,7 @@ tf_py_test(
         "//tensorflow/python:training",
         "//tensorflow/python:variables",
     ],
+    tags = ["no_mac"],
 )
 
 tf_py_test(
@@ -48,6 +48,7 @@ tf_py_test(
         "//tensorflow/python:constant_op",
         "//tensorflow/python:resources",
     ],
+    tags = ["no_mac"],
 )
 
 tf_py_test(
@@ -55,9 +56,14 @@ tf_py_test(
     size = "medium",
     srcs = ["stats_ops_test.py"],
     additional_deps = [
+        "//third_party/py/numpy",
+        "//tensorflow/python:array_ops",
         "//tensorflow/python:boosted_trees_ops",
+        "//tensorflow/python:constant_op",
+        "//tensorflow/python:dtypes",
         "//tensorflow/python:framework",
         "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python:platform_test",
     ],
 )
 
@@ -73,6 +79,7 @@ tf_py_test(
         "//tensorflow/python:framework_test_lib",
         "//tensorflow/python:resources",
     ],
+    tags = ["no_mac"],
 )
 
 tf_py_test(
