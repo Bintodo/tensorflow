@@ -39,8 +39,7 @@ limitations under the License.
 //     resource variables).
 //
 // The result is incorrect around loops because we ignore edges from
-// NextIteration to Merge, but that should be fine because we don't cluster
-// these edges.  For instance, in:
+// NextIteration to Merge.  For instance, in:
 //
 // Init -----> Merge <-------+
 //               |           |
@@ -55,20 +54,19 @@ limitations under the License.
 //
 // we won't put (Read, Write) in the returned set.  This is fine if
 // auto-clustering can only cluster the Read->Write edge, but it is a problem if
-// it clusters the Write->NextIteration->Merge->Read edges instead.  The same
-// problem is present for the functional version of the loop above.  We rely on
-// auto-clustering to not cluster control flow edges like NextIteration->Merge.
-// This is enough to avoid the explicit-control-flow problem shown above.  One
-// way to think about this is that we only care about cases where two nodes, A
-// and B, would normally have been put in the same cluster but cannot legally be
-// in the same cluster because of resourcevar-dependencies.  If A and B would
+// it clusters the Write->NextIteration->Merge->Read edges instead.  So we rely
+// on auto-clustering to not cluster NextIteration->Merge edges.  The same
+// problem is present for the functional version of the loop above and we also
+// rely on auto-clustering not clustering functional while loops containing
+// resource operations.
+//
+// One way to think about this is that we only care about cases where two nodes,
+// A and B, would normally have been put in the same cluster but cannot legally
+// be in the same cluster because of resourcevar-dependencies.  If A and B would
 // normally have been put in the same cluster then all paths between A and B
 // would have to be clusterable (otherwise we'd have introduced a cycle).  Ergo
 // there could not have been a NextIteration->Merge edge between A and B since
 // we don't cluster these edges.
-//
-// We also rely on auto-clustering to not cluster functional control flow nodes
-// that contain resource operations.
 //
 // IMPLEMENTATION
 // --------------
@@ -86,65 +84,48 @@ limitations under the License.
 #include "absl/memory/memory.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/optional.h"
+#include "tensorflow/compiler/jit/xla_cluster_util.h"
 #include "tensorflow/compiler/tf2xla/resource_operation_table.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/tensor_id.h"
 #include "tensorflow/core/lib/hash/hash.h"
-#include "tensorflow/core/util/ptr_util.h"
 
 namespace tensorflow {
 namespace {
-// Returns true if `n` may call a function.
-Status MayCallFunction(const Node& n, const FunctionLibraryDefinition* flib_def,
-                       bool* out_result) {
-  if (flib_def->Contains(n.type_string())) {
-    *out_result = true;
-  } else {
-    *out_result =
-        std::any_of(n.def().attr().begin(), n.def().attr().end(),
-                    [](const std::pair<string, AttrValue>& name_attr_pair) {
-                      return name_attr_pair.second.has_func();
-                    });
-  }
-
-  return Status::OK();
-}
-
 // Maps `n` to the XlaResourceOpKind corresponding to its operation.  If `n` is
 // not a resource operation recognized by XLA then sets `out_resource_op_kind`
 // to nullopt.
-Status XlaResourceOpKindForNode(
+absl::Status XlaResourceOpKindForNode(
     const Node& n, const FunctionLibraryDefinition* flib_def,
-    const std::function<Status(const Node&, bool*)>& resource_ops_to_ignore,
-    absl::optional<XlaResourceOpKind>* out_resource_op_kind) {
+    const std::function<absl::Status(const Node&, bool*)>&
+        resource_ops_to_ignore,
+    std::optional<XlaResourceOpKind>* out_resource_op_kind) {
   bool should_ignore = false;
   if (resource_ops_to_ignore) {
     TF_RETURN_IF_ERROR(resource_ops_to_ignore(n, &should_ignore));
   }
   if (should_ignore) {
-    *out_resource_op_kind = absl::nullopt;
-    return Status::OK();
+    *out_resource_op_kind = std::nullopt;
+    return absl::OkStatus();
   }
 
   const XlaResourceOpInfo* op_info = GetResourceOpInfoForOp(n.type_string());
   if (op_info) {
     *out_resource_op_kind = op_info->kind();
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // We conservatively assume that functions will both read and write resource
   // variables.  In the future we may consider doing some form of
   // inter-procedural analysis.
-  bool may_call_function;
-  TF_RETURN_IF_ERROR(MayCallFunction(n, flib_def, &may_call_function));
-  if (may_call_function) {
+  if (MayCallFunction(n, flib_def)) {
     *out_resource_op_kind = XlaResourceOpKind::kReadWrite;
   } else {
-    *out_resource_op_kind = absl::nullopt;
+    *out_resource_op_kind = std::nullopt;
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Returns true if a control or data dependence from a TensorFlow operation of
@@ -152,13 +133,12 @@ Status XlaResourceOpKindForNode(
 // can be represented by an XLA cluster and needs no special handling around
 // auto-jit.
 bool IsEdgeSafe(XlaResourceOpKind from, XlaResourceOpKind to) {
-  // XLA clusters forces all reads to happen before all writes, which means the
-  // kinds of edges it can faithfully represent are: Read->Write, Read->Modify,
-  // Modify->Write, Read->Read, Write->Write.
-  //
-  // TODO(b/112856632): We can, in theory, support Read->Read and Write->Write
-  // dependencies.
-  return from == XlaResourceOpKind::kRead && to == XlaResourceOpKind::kWrite;
+  // XLA clusters force all reads to happen before all writes.  Moreover the set
+  // of reads are executed as one atomic operation, and the set of writes are as
+  // another atomic operation.  This means we can faithfully represent the
+  // following edges: Read->*, *->Write.
+
+  return from == XlaResourceOpKind::kRead || to == XlaResourceOpKind::kWrite;
 }
 
 using ResourceOp = std::pair<int, XlaResourceOpKind>;
@@ -228,7 +208,7 @@ class ResourceOpSet {
 
   void EnsureIsCopied() {
     if (storage_ == nullptr) {
-      storage_ = absl::make_unique<Impl>();
+      storage_ = std::make_unique<Impl>();
       for (ResourceOp op : *this) {
         storage_->insert(op);
       }
@@ -249,7 +229,8 @@ class ResourceOpSet {
   // to this set expect the contents of this set to be stable.
   mutable bool frozen_ = false;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(ResourceOpSet);
+  ResourceOpSet(const ResourceOpSet&) = delete;
+  void operator=(const ResourceOpSet&) = delete;
 };
 
 string ResourceOpSetToString(const ResourceOpSet& resource_op_set) {
@@ -266,9 +247,10 @@ string NodeToString(const Node& n, XlaResourceOpKind resource_op_kind) {
 }
 }  // namespace
 
-Status ComputeIncompatibleResourceOperationPairs(
+absl::Status ComputeIncompatibleResourceOperationPairs(
     const Graph& g, const FunctionLibraryDefinition* flib_def,
-    const std::function<Status(const Node&, bool*)>& resource_ops_to_ignore,
+    const std::function<absl::Status(const Node&, bool*)>&
+        resource_ops_to_ignore,
     std::vector<std::pair<int, int>>* result) {
   CHECK(result->empty());
 
@@ -279,12 +261,12 @@ Status ComputeIncompatibleResourceOperationPairs(
                       });
 
   auto resource_op_set_for_node =
-      absl::make_unique<ResourceOpSet[]>(g.num_node_ids());
+      std::make_unique<ResourceOpSet[]>(g.num_node_ids());
 
   const bool vlog = VLOG_IS_ON(2);
 
   for (Node* n : rpo) {
-    absl::optional<XlaResourceOpKind> op_kind;
+    std::optional<XlaResourceOpKind> op_kind;
     TF_RETURN_IF_ERROR(XlaResourceOpKindForNode(
         *n, flib_def, resource_ops_to_ignore, &op_kind));
 
@@ -319,7 +301,11 @@ Status ComputeIncompatibleResourceOperationPairs(
         result->push_back({incoming_op.first, n->id()});
       }
 
-      resource_op_set->Add({n->id(), *op_kind});
+      // Some graphs might have a lot of 'kRead' kinds, but they are always safe
+      // for incoming ops, so not storing them might save a lot of memory.
+      if (op_kind != XlaResourceOpKind::kRead) {
+        resource_op_set->Add({n->id(), *op_kind});
+      }
     }
 
     if (vlog) {
@@ -330,6 +316,6 @@ Status ComputeIncompatibleResourceOperationPairs(
   std::sort(result->begin(), result->end());
   CHECK(std::unique(result->begin(), result->end()) == result->end());
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 }  // namespace tensorflow

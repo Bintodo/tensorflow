@@ -16,11 +16,13 @@
 #include <string>
 #include <vector>
 
+#include "absl/log/check.h"
+#include "xla/tsl/platform/status.h"
 #include "tensorflow/core/framework/op.h"
-#include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/init_main.h"
+#include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/command_line_flags.h"
 #include "tensorflow/java/src/gen/cc/op_generator.h"
 
@@ -35,7 +37,7 @@ const char kUsageHeader[] =
     "graph.\n\n"
     "Operation wrappers are generated under the path specified by the "
     "'--output_dir' argument. This path can be absolute or relative to the\n"
-    "current working directory and will be created if it does not exists.\n\n"
+    "current working directory and will be created if it does not exist.\n\n"
     "Note that the operations will not be available through the "
     "'org.tensorflow.op.Ops' API until the generated classes are compiled\n"
     "using an appropriate annotation processor.\n\n"

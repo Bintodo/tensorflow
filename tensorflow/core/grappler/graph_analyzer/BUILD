@@ -1,6 +1,10 @@
-licenses(["notice"])  # Apache 2.0
-
 load("//tensorflow:tensorflow.bzl", "tf_cc_test")
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
+
+package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    licenses = ["notice"],
+)
 
 cc_library(
     name = "graph_analyzer_lib",
@@ -42,7 +46,7 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:tensorflow",
-        "//tensorflow/core/grappler:grappler_item",
+        "//tensorflow/core/grappler/utils:transitive_fanin",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -60,7 +64,6 @@ cc_library(
     deps = [
         ":graph_analyzer_lib",
         "//tensorflow/core:framework",
-        "//tensorflow/core:tensorflow",
         "//tensorflow/core/grappler:op_types",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",

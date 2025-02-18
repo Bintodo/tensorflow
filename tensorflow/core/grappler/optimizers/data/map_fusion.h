@@ -16,32 +16,50 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_DATA_MAP_FUSION_H_
 #define TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_DATA_MAP_FUSION_H_
 
-#include "tensorflow/core/grappler/optimizers/custom_graph_optimizer.h"
+#include "tensorflow/core/framework/attr_value.pb.h"
+#include "tensorflow/core/grappler/optimizers/data/optimizer_base.h"
 
 namespace tensorflow {
 namespace grappler {
 
+constexpr char kAutotune[] = "autotune";
+
 // This optimization fuses map transformations by merging their map functions.
-class MapFusion : public CustomGraphOptimizer {
+class MapFusion : public TFDataOptimizerBase {
  public:
   MapFusion() = default;
   ~MapFusion() override = default;
 
   string name() const override { return "map_fusion"; };
 
-  Status Init(
+  bool UsesFunctionLibrary() const override { return false; }
+
+  absl::Status Init(
       const tensorflow::RewriterConfig_CustomGraphOptimizer* config) override {
-    return Status::OK();
+    if (!config) return absl::OkStatus();
+
+    const string& autotune = config->parameter_map().at(kAutotune).s();
+    if (autotune == "true") {
+      autotune_ = true;
+    } else if (autotune == "false") {
+      autotune_ = false;
+    } else {
+      return errors::InvalidArgument("Received an invalid value for parameter ",
+                                     kAutotune, ": ", autotune);
+    }
+    return absl::OkStatus();
   }
 
-  Status Optimize(Cluster* cluster, const GrapplerItem& item,
-                  GraphDef* output) override;
+  absl::Status OptimizeAndCollectStats(Cluster* cluster,
+                                       const GrapplerItem& item,
+                                       GraphDef* output,
+                                       OptimizationStats* stats) override;
 
-  void Feedback(Cluster* cluster, const GrapplerItem& item,
-                const GraphDef& optimize_output, double result) override;
+ private:
+  bool autotune_ = true;
 };
 
-}  // end namespace grappler
-}  // end namespace tensorflow
+}  // namespace grappler
+}  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_DATA_MAP_FUSION_H_

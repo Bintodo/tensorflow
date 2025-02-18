@@ -30,11 +30,10 @@ class DebugStripper : public GraphOptimizer {
 
   string name() const override { return "debug_stripper"; };
 
-  Status Optimize(Cluster* cluster, const GrapplerItem& item,
-                  GraphDef* output) override;
+  bool UsesFunctionLibrary() const override { return false; }
 
-  void Feedback(Cluster* cluster, const GrapplerItem& item,
-                const GraphDef& optimize_output, double result) override;
+  absl::Status Optimize(Cluster* cluster, const GrapplerItem& item,
+                        GraphDef* output) override;
 };
 
 }  // end namespace grappler

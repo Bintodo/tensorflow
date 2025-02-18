@@ -14,15 +14,14 @@
 # ==============================================================================
 """Tests for tensorflow.ops.random_grad."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
+
 
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import gen_stateless_random_ops_v2
 from tensorflow.python.ops import gradients_impl
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_grad
@@ -45,6 +44,7 @@ class AddLeadingUnitDimensionsTest(test.TestCase):
     ret = random_grad.add_leading_unit_dimensions(1.0, 2)
     self.assertAllEqual(ret.shape, [1, 1])
 
+  @test_util.run_deprecated_v1
   def testUnknownShape(self):
     x = array_ops.placeholder(dtypes.float32)
     num_dimensions = array_ops.placeholder(dtypes.int32)
@@ -72,29 +72,32 @@ class RandomGammaGradTest(test.TestCase):
   some statistical properties of the derivative.
   """
 
+  @test_util.run_deprecated_v1
   def testGradientsShape(self):
     shape = [2, 3]
     alpha = array_ops.ones([2, 2])
     beta = array_ops.ones([1, 2])
-    sample = random_ops.random_gamma(shape, alpha, beta)
+    sample = random_ops.random_gamma(shape, alpha, beta, seed=12345)
     grads_alpha, grads_beta = gradients_impl.gradients(sample, [alpha, beta])
     self.assertAllEqual(grads_alpha.shape, alpha.shape)
     self.assertAllEqual(grads_beta.shape, beta.shape)
 
+  @test_util.run_deprecated_v1
   def testGradientsShapeWithOneSamplePerParameter(self):
     shape = []
     alpha = array_ops.ones([2, 2])
     beta = array_ops.ones([1, 2])
-    sample = random_ops.random_gamma(shape, alpha, beta)
+    sample = random_ops.random_gamma(shape, alpha, beta, seed=12345)
     grads_alpha, grads_beta = gradients_impl.gradients(sample, [alpha, beta])
     self.assertAllEqual(grads_alpha.shape, alpha.shape)
     self.assertAllEqual(grads_beta.shape, beta.shape)
 
+  @test_util.run_deprecated_v1
   def testGradientsUnknownShape(self):
     shape = array_ops.placeholder(dtypes.int32)
     alpha = array_ops.placeholder(dtypes.float32)
     beta = array_ops.placeholder(dtypes.float32)
-    sample = random_ops.random_gamma(shape, alpha, beta)
+    sample = random_ops.random_gamma(shape, alpha, beta, seed=12345)
     grads_alpha, grads_beta = gradients_impl.gradients(sample, [alpha, beta])
 
     alpha_val = np.ones([1, 2])
@@ -124,7 +127,8 @@ class RandomGammaGradTest(test.TestCase):
 
       alpha_val = np.logspace(-2, 3, dtype=np_dtype)
       alpha = constant_op.constant(alpha_val)
-      sample = random_ops.random_gamma([], alpha, np_dtype(1.0), dtype=dtype)
+      sample = random_ops.random_gamma(
+          [], alpha, np_dtype(1.0), dtype=dtype, seed=12345)
       actual = gradients_impl.gradients(sample, alpha)[0]
 
       (sample_val, actual_val) = self.evaluate((sample, actual))
@@ -138,9 +142,11 @@ class RandomGammaGradTest(test.TestCase):
     except ImportError as e:
       tf_logging.warn("Cannot use special functions in a test: %s" % str(e))
 
+  @test_util.run_deprecated_v1
   def testCompareToExplicitDerivativeFloat(self):
     self._testCompareToExplicitDerivative(dtypes.float32)
 
+  @test_util.run_deprecated_v1
   def testCompareToExplicitDerivativeDouble(self):
     self._testCompareToExplicitDerivative(dtypes.float64)
 
@@ -168,7 +174,8 @@ class RandomGammaGradTest(test.TestCase):
     """
     np_dtype = dtype.as_numpy_dtype
     alpha = constant_op.constant(np.logspace(-2, 3, dtype=np_dtype))
-    sample = random_ops.random_gamma([], alpha, np_dtype(1.0), dtype=dtype)
+    sample = random_ops.random_gamma(
+        [], alpha, np_dtype(1.0), dtype=dtype, seed=12345)
     actual = gradients_impl.gradients(sample, alpha)[0]
 
     sample_sg = array_ops.stop_gradient(sample)
@@ -182,12 +189,15 @@ class RandomGammaGradTest(test.TestCase):
 
     self.assertAllClose(actual_val, expected_val, rtol=1e-3, atol=1e-3)
 
+  @test_util.run_deprecated_v1
   def testCompareToImplicitDerivativeFloat(self):
     self._testCompareToImplicitDerivative(dtypes.float32)
 
+  @test_util.run_deprecated_v1
   def testCompareToImplicitDerivativeDouble(self):
     self._testCompareToImplicitDerivative(dtypes.float64)
 
+  @test_util.run_deprecated_v1
   def testAverageAlphaGradient(self):
     """Statistical test for the gradient.
 
@@ -197,9 +207,9 @@ class RandomGammaGradTest(test.TestCase):
     Here we verify that the rhs is fairly close to one.
     The convergence speed is not great, so we use many samples and loose bounds.
     """
-    num_samples = 1000
+    num_samples = 10000
     alpha = constant_op.constant([0.8, 1e1, 1e3], dtype=dtypes.float32)
-    sample = random_ops.random_gamma([num_samples], alpha)
+    sample = random_ops.random_gamma([num_samples], alpha, seed=12345)
     # We need to average the gradients, which is equivalent to averaging the
     # samples and then doing backprop.
     mean_sample = math_ops.reduce_mean(sample, axis=0)
@@ -207,6 +217,7 @@ class RandomGammaGradTest(test.TestCase):
     dsample_dalpha_val = self.evaluate(dsample_dalpha)
     self.assertAllClose(dsample_dalpha_val, [1.0] * 3, atol=1e-1, rtol=1e-1)
 
+  @test_util.run_deprecated_v1
   def testQuadraticLoss(self):
     """Statistical test for the gradient.
 
@@ -223,13 +234,36 @@ class RandomGammaGradTest(test.TestCase):
     We compare the Monte-Carlo estimate of the expectation with the
     true gradient.
     """
-    num_samples = 1000
+    num_samples = 10000
     t = 0.3
     alpha = 0.5
     expected = 1 + 2 * alpha - 2 * t
 
     alpha = constant_op.constant(alpha)
-    sample = random_ops.random_gamma([num_samples], alpha, 1.0)
+    sample = random_ops.random_gamma([num_samples], alpha, 1.0, seed=12345)
+    loss = math_ops.reduce_mean(math_ops.square(sample - t))
+    dloss_dalpha = gradients_impl.gradients(loss, alpha)[0]
+    dloss_dalpha_val = self.evaluate(dloss_dalpha)
+    self.assertAllClose(expected, dloss_dalpha_val, atol=1e-1, rtol=1e-1)
+
+  @test_util.run_deprecated_v1
+  def testQuadraticLossV3(self):
+    """Statistical test for the gradient.
+
+    This is the same test as in testQuadraticLoss but for
+    StatelessRandomGammaV3.
+    """
+    shape = constant_op.constant([10000])
+    t = 0.3
+    alpha = constant_op.constant(0.5, dtype=dtypes.float32)
+    key = constant_op.constant([0], dtype=dtypes.uint64)
+    counter = constant_op.constant([10, 20], dtype=dtypes.uint64)
+    # Use PHILOX algorithm
+    alg = constant_op.constant(1)
+    expected = 1 + 2 * alpha - 2 * t
+
+    sample = gen_stateless_random_ops_v2.stateless_random_gamma_v3(
+        shape=shape, key=key, counter=counter, alg=alg, alpha=alpha)
     loss = math_ops.reduce_mean(math_ops.square(sample - t))
     dloss_dalpha = gradients_impl.gradients(loss, alpha)[0]
     dloss_dalpha_val = self.evaluate(dloss_dalpha)

@@ -23,14 +23,119 @@ namespace tensorflow {
 namespace grappler {
 namespace graph_tests_utils {
 
-NodeDef MakeMapNode(StringPiece name, StringPiece input_node_name,
-                    StringPiece function_name = "XTimesTwo");
+// Creates a test NodeDef for BatchDatasetV2.
+NodeDef MakeBatchV2Node(absl::string_view name,
+                        absl::string_view input_node_name,
+                        absl::string_view batch_size_node_name,
+                        absl::string_view drop_remainder_node_name,
+                        bool parallel_copy);
 
-NodeDef MakeFilterNode(StringPiece name, StringPiece input_node_name,
-                       StringPiece function_name = "IsZero");
+// Creates a test NodeDef for ParallelBatchDataset.
+NodeDef MakeParallelBatchNode(absl::string_view name,
+                              absl::string_view input_node_name,
+                              absl::string_view batch_size_node_name,
+                              absl::string_view num_parallel_calls_node_name,
+                              absl::string_view drop_remainder_node_name,
+                              absl::string_view deterministic);
 
-}  // end namespace graph_tests_utils
-}  // end namespace grappler
-}  // end namespace tensorflow
+// Creates a test NodeDef for ShuffleDatasetV2.
+NodeDef MakeCacheV2Node(absl::string_view name,
+                        absl::string_view input_node_name,
+                        absl::string_view filename_node_name,
+                        absl::string_view cache_node_name);
+
+// Creates a test NodeDef for FilterDataset.
+NodeDef MakeFilterNode(absl::string_view name,
+                       absl::string_view input_node_name,
+                       absl::string_view function_name = "IsZero");
+
+// Creates a test NodeDef for MapDataset.
+NodeDef MakeMapNode(absl::string_view name, absl::string_view input_node_name,
+                    absl::string_view function_name = "XTimesTwo");
+
+// Creates a test NodeDef for MapAndBatchDataset.
+NodeDef MakeMapAndBatchNode(absl::string_view name,
+                            absl::string_view input_node_name,
+                            absl::string_view batch_size_node_name,
+                            absl::string_view num_parallel_calls_node_name,
+                            absl::string_view drop_remainder_node_name,
+                            absl::string_view function_name = "XTimesTwo");
+
+// Creates a test NodeDef for ParallelInterleaveDatasetV2.
+NodeDef MakeParallelInterleaveV2Node(
+    absl::string_view name, absl::string_view input_node_name,
+    absl::string_view cycle_length_node_name,
+    absl::string_view block_length_node_name,
+    absl::string_view num_parallel_calls_node_name,
+    absl::string_view function_name, bool sloppy);
+
+// Creates a test NodeDef for ParallelInterleaveDatasetV4.
+NodeDef MakeParallelInterleaveV4Node(
+    absl::string_view name, absl::string_view input_node_name,
+    absl::string_view cycle_length_node_name,
+    absl::string_view block_length_node_name,
+    absl::string_view num_parallel_calls_node_name,
+    absl::string_view function_name, absl::string_view deterministic);
+
+// Creates a test NodeDef for InterleaveDataset.
+NodeDef MakeInterleaveNode(absl::string_view name,
+                           absl::string_view input_node_name,
+                           absl::string_view cycle_length_node_name,
+                           absl::string_view block_length_node_name,
+                           absl::string_view function_name,
+                           absl::string_view deterministic);
+
+// Creates a test NodeDef for ParallelMapDataset.
+NodeDef MakeParallelMapNode(absl::string_view name,
+                            absl::string_view input_node_name,
+                            absl::string_view num_parallel_calls_node_name,
+                            absl::string_view function_name, bool sloppy);
+
+// Creates a test NodeDef for ParallelMapDatasetV2.
+NodeDef MakeParallelMapV2Node(absl::string_view name,
+                              absl::string_view input_node_name,
+                              absl::string_view num_parallel_calls_node_name,
+                              absl::string_view function_name,
+                              absl::string_view deterministic,
+                              bool use_unbounded_threadpool);
+
+// Creates a test NodeDef for ParseExampleDataset.
+NodeDef MakeParseExampleNode(absl::string_view name,
+                             absl::string_view input_node_name,
+                             absl::string_view num_parallel_calls_node_name,
+                             bool sloppy);
+
+// Creates a test NodeDef for ShuffleDatasetV2.
+NodeDef MakeShuffleV2Node(absl::string_view name,
+                          absl::string_view input_node_name,
+                          absl::string_view buffer_size_node_name,
+                          absl::string_view seed_generator_node_name);
+
+// Creates a test NodeDef for TakeDataset.
+NodeDef MakeTakeNode(absl::string_view name, absl::string_view input_node_name,
+                     absl::string_view count_node_name);
+
+// Creates a test NodeDef for TensorSliceDataset.
+NodeDef MakeTensorSliceNode(absl::string_view name,
+                            absl::string_view tensor_node_name,
+                            bool replicate_on_split);
+
+// Creates a test NodeDef for SkipDataset.
+NodeDef MakeSkipNode(absl::string_view name, absl::string_view input_node_name,
+                     absl::string_view count_node_name);
+
+// Creates a test NodeDef for ShardDataset.
+NodeDef MakeShardNode(absl::string_view name, absl::string_view input_node_name,
+                      absl::string_view num_shards_node_name,
+                      absl::string_view index_node_name);
+
+// Creates a test NodeDef for PrefetchDataset.
+NodeDef MakePrefetchNode(absl::string_view name,
+                         absl::string_view input_node_name,
+                         absl::string_view buffer_size);
+
+}  // namespace graph_tests_utils
+}  // namespace grappler
+}  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_DATA_GRAPH_TEST_UTILS_H_

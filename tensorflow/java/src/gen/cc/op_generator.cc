@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/java/src/gen/cc/op_generator.h"
+
 #include <list>
 #include <map>
 #include <memory>
@@ -21,14 +23,18 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/strings/ascii.h"
+#include "xla/tsl/platform/status.h"
+#include "tensorflow/core/framework/api_def.pb.h"
+#include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/framework/op_gen_lib.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/file_system.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/path.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/java/src/gen/cc/java_defs.h"
-#include "tensorflow/java/src/gen/cc/op_generator.h"
 #include "tensorflow/java/src/gen/cc/op_specs.h"
 #include "tensorflow/java/src/gen/cc/source_writer.h"
 
@@ -160,12 +166,11 @@ void RenderSecondaryFactoryMethod(const OpSpec& op, const Type& op_class,
   }
   Method factory = Method::Create("create", return_type);
   Javadoc factory_doc = Javadoc::Create(
-      "Factory method to create a class to wrap a new " + op_class.name() +
-      " operation to the graph, using "
-      "default output types.");
+      "Factory method to create a class wrapping a new " + op_class.name() +
+      " operation using default output types.");
   Variable scope =
       Variable::Create("scope", Type::Class("Scope", "org.tensorflow.op"));
-  AddArgument(scope, "current graph scope", &factory, &factory_doc);
+  AddArgument(scope, "current scope", &factory, &factory_doc);
   std::stringstream factory_statement;
   factory_statement << "return create(scope";
   for (const ArgumentSpec& input : op.inputs()) {
@@ -194,7 +199,7 @@ void RenderSecondaryFactoryMethod(const OpSpec& op, const Type& op_class,
   factory_doc.add_tag("return", "a new instance of " + op_class.name());
 
   writer->BeginMethod(factory, PUBLIC | STATIC, &factory_doc);
-  writer->Append(factory_statement.str().c_str()).Append(");").EndLine();
+  writer->Append(factory_statement.str()).Append(");").EndLine();
   writer->EndMethod();
 }
 
@@ -202,11 +207,11 @@ void RenderFactoryMethods(const OpSpec& op, const Type& op_class,
                           SourceWriter* writer) {
   Method factory = Method::Create("create", op_class);
   Javadoc factory_doc =
-      Javadoc::Create("Factory method to create a class to wrap a new " +
-                      op_class.name() + " operation to the graph.");
+      Javadoc::Create("Factory method to create a class wrapping a new " +
+                      op_class.name() + " operation.");
   Variable scope =
       Variable::Create("scope", Type::Class("Scope", "org.tensorflow.op"));
-  AddArgument(scope, "current graph scope", &factory, &factory_doc);
+  AddArgument(scope, "current scope", &factory, &factory_doc);
   for (const ArgumentSpec& input : op.inputs()) {
     AddArgument(input.var(), input.description(), &factory, &factory_doc);
   }
@@ -229,7 +234,7 @@ void RenderFactoryMethods(const OpSpec& op, const Type& op_class,
   factory_doc.add_tag("return", "a new instance of " + op_class.name());
 
   writer->BeginMethod(factory, PUBLIC | STATIC, &factory_doc);
-  writer->Append("OperationBuilder opBuilder = scope.graph().opBuilder(\"" +
+  writer->Append("OperationBuilder opBuilder = scope.env().opBuilder(\"" +
                  op.graph_op_name() + "\", scope.makeOpName(\"" +
                  op_class.name() + "\"));");
   writer->EndLine();
@@ -244,6 +249,10 @@ void RenderFactoryMethods(const OpSpec& op, const Type& op_class,
       writer->EndLine();
     }
   }
+  // Add control dependencies, if any.
+  writer->Append("opBuilder = scope.applyControlDependencies(opBuilder);");
+  writer->EndLine();
+
   for (const AttributeSpec& attribute : op.attributes()) {
     WriteSetAttrDirective(attribute, false, writer);
   }
@@ -410,7 +419,7 @@ void RenderOptionsClass(const OpSpec& op, const Type& op_class,
 inline Type ClassOf(const EndpointSpec& endpoint, const string& base_package) {
   return Type::Class(
       endpoint.name(),
-      base_package + "." + str_util::Lowercase(endpoint.package()));
+      base_package + "." + absl::AsciiStrToLower(endpoint.package()));
 }
 
 void GenerateOp(const OpSpec& op, const EndpointSpec& endpoint,
@@ -516,7 +525,7 @@ bool CanGenerateOp(const OpDef& op_def, const ApiDef& api_def) {
     return false;
   }
   for (const auto& attr : op_def.attr()) {
-    if (attr.type() == "func") {
+    if (attr.type() == "func" || attr.type() == "list(func)") {
       return false;  // TODO(karllessard) add support for function attributes
     }
   }
@@ -525,8 +534,8 @@ bool CanGenerateOp(const OpDef& op_def, const ApiDef& api_def) {
 
 }  // namespace
 
-Status OpGenerator::Run(const OpList& op_list, const string& base_package,
-                        const string& output_dir) {
+absl::Status OpGenerator::Run(const OpList& op_list, const string& base_package,
+                              const string& output_dir) {
   ApiDefMap api_map(op_list);
   if (!api_dirs_.empty()) {
     // Only load api files that correspond to the requested "op_list"
@@ -551,7 +560,7 @@ Status OpGenerator::Run(const OpList& op_list, const string& base_package,
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace java

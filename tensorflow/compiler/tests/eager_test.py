@@ -14,29 +14,30 @@
 # ==============================================================================
 """Test cases for eager execution using XLA."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.compiler.tests import xla_test
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import context
-from tensorflow.python.eager import function
+from tensorflow.python.eager import def_function
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
 from tensorflow.python.layers import convolutional
 from tensorflow.python.layers import pooling
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack  # pylint: disable=g-direct-tensorflow-import
+from tensorflow.python.ops import cond
 from tensorflow.python.ops import embedding_ops
+from tensorflow.python.ops import functional_ops
 from tensorflow.python.ops import gen_random_ops
 from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import resource_variable_ops
+from tensorflow.python.ops import while_loop
 from tensorflow.python.platform import googletest
 from tensorflow.python.training import adam
 
@@ -68,7 +69,7 @@ class EagerTest(xla_test.XLATestCase):
   def testExecuteListOutputLen0(self):
     with self.test_scope():
       empty = constant_op.constant([], dtype=dtypes.float32)
-      result = array_ops.unstack(empty, 0)
+      result = array_ops_stack.unstack(empty, 0)
       self.assertTrue(isinstance(result, list))
       self.assertEqual(0, len(result))
 
@@ -101,12 +102,12 @@ class EagerTest(xla_test.XLATestCase):
       self.assertAllEqual(15, product)
 
     # Run some ops graphly
-    with context.graph_mode(), self.cached_session() as sess:
+    with context.graph_mode(), self.session():
       with self.test_scope():
         three = constant_op.constant(3)
         five = constant_op.constant(5)
         product = three * five
-        self.assertAllEqual(15, sess.run(product))
+        self.assertAllEqual(15, self.evaluate(product))
 
   def testDegenerateSlices(self):
     with self.test_scope():
@@ -279,7 +280,7 @@ class EagerTest(xla_test.XLATestCase):
         embedding = embedding_ops.embedding_lookup(embedding_matrix, [1])
         y = math_ops.reduce_sum(embedding)
       dy_dx = tape.gradient(y, embedding_matrix)
-      self.assertIsInstance(dy_dx, ops.IndexedSlices)
+      self.assertIsInstance(dy_dx, indexed_slices.IndexedSlices)
       optimizer = adam.AdamOptimizer(0.1)
       # The gradient application operations will run on CPU because optimizer
       # updates are always collocated with the variable.
@@ -299,7 +300,7 @@ class EagerFunctionTest(xla_test.XLATestCase):
 
   def testBasic(self):
     with self.test_scope():
-      matmul = function.defun(math_ops.matmul)
+      matmul = def_function.function(math_ops.matmul)
       t = constant_op.constant([[1.0, 2.0], [3.0, 4.0]])
       sq = matmul(t, t, transpose_a=True)
       self.assertAllEqual(sq.numpy().reshape(-1), [10, 14, 14, 20])
@@ -308,7 +309,7 @@ class EagerFunctionTest(xla_test.XLATestCase):
     if 'GPU' in self.device:
       # TODO(b/32333178)
       self.skipTest('Current implementation of RandomStandardNormal kernel '
-                    'is very slow on GPU, and has been blacklisted.')
+                    'is very slow on GPU, and has been denylisted.')
     with self.test_scope():
       data_format = 'channels_last'
       conv = convolutional.Conv2D(
@@ -321,7 +322,7 @@ class EagerFunctionTest(xla_test.XLATestCase):
       def model(x):
         x = conv(x)
         return pool(x)
-      model = function.defun(model)
+      model = def_function.function(model)
 
       x = array_ops.ones([1, 4, 4, 1])
       y = model(x)
@@ -331,12 +332,63 @@ class EagerFunctionTest(xla_test.XLATestCase):
     with self.test_scope():
       v = resource_variable_ops.ResourceVariable(1.0)
 
-      @function.defun
+      @def_function.function
       def f():
         return v.read_value()
 
       var = f()
       self.assertEqual(1.0, var.numpy())
+
+  def testResourceVariableNoInlineReadWrite(self):
+    with self.test_scope():
+      v = resource_variable_ops.ResourceVariable(1.0)
+      w = resource_variable_ops.ResourceVariable(0.0)
+
+      @def_function.function(experimental_attributes={'_noinline': True})
+      def g(x):
+        w.assign(w.read_value() + x)
+        return v.read_value() + x * w.read_value()
+
+      @def_function.function(experimental_attributes={'_noinline': True})
+      def f():
+        return g(1.0) + g(2.0) + g(3.0) + g(4.0) + g(5.0)
+
+      # 1 + 1*1 + 1 + 2*3 + 1 + 3*6 + 1 + 4*10 + 1 + 5*15
+      self.assertEqual(145.0, f().numpy())
+      self.assertEqual(15.0, w.read_value().numpy())
+
+  def testResourceVariableNoInlineReadOnly(self):
+    with self.test_scope():
+      v = resource_variable_ops.ResourceVariable(10.0)
+
+      @def_function.function(experimental_attributes={'_noinline': True})
+      def g():
+        return v.read_value()
+
+      @def_function.function(experimental_attributes={'_noinline': True})
+      def f():
+        return g() + g() + g() + g() + g()
+
+      self.assertEqual(50.0, f().numpy())
+
+  def testResourceVariableNoInlineWriteOnly(self):
+    with self.test_scope():
+      v = resource_variable_ops.ResourceVariable(0.0)
+
+      @def_function.function(experimental_attributes={'_noinline': True})
+      def g(x):
+        v.assign(x)
+
+      @def_function.function(experimental_attributes={'_noinline': True})
+      def f():
+        g(1.0)
+        g(2.0)
+        g(3.0)
+        g(4.0)
+        g(5.0)
+
+      f()
+      self.assertEqual(5.0, v.read_value().numpy())
 
   def testUpdateVariable(self):
     with self.test_scope():
@@ -346,7 +398,7 @@ class EagerFunctionTest(xla_test.XLATestCase):
         v.assign_add(1.0)
         return v
 
-      f = function.defun(f)
+      f = def_function.function(f)
 
       var = f(v)
       self.assertEqual(2.0, var.numpy())
@@ -358,7 +410,7 @@ class EagerFunctionTest(xla_test.XLATestCase):
       def f(v):
         return v.handle
 
-      f = function.defun(f)
+      f = def_function.function(f)
       handle = f(v)
       self.assertAllEqual(v.numpy(),
                           resource_variable_ops.read_variable_op(
@@ -372,7 +424,7 @@ class EagerFunctionTest(xla_test.XLATestCase):
       def f(v):
         return v.handle, 3.0 * v, v2.handle, v + v2
 
-      f = function.defun(f)
+      f = def_function.function(f)
       v1_handle, v1_times_3, v2_handle, variable_sum = f(v1)
       self.assertAllEqual(v1.numpy(),
                           resource_variable_ops.read_variable_op(
@@ -406,7 +458,7 @@ class EagerFunctionTest(xla_test.XLATestCase):
         d = r2 * v2
         return a, b, c, d
 
-      foo = function.defun(foo)
+      foo = def_function.function(foo)
 
       c1 = [0, 0]
       c2 = array_ops.ones([2], dtype=dtypes.int32)
@@ -428,7 +480,7 @@ class EagerFunctionTest(xla_test.XLATestCase):
     with self.test_scope():
       v0 = resource_variable_ops.ResourceVariable(5.0)
 
-      @function.defun
+      @def_function.function
       def f(x):
         x = v0 * v0 * x
         return x
@@ -445,7 +497,7 @@ class EagerFunctionTest(xla_test.XLATestCase):
     with self.test_scope():
       v0 = resource_variable_ops.ResourceVariable(5.0)
 
-      @function.defun
+      @def_function.function
       def f():
         x = constant_op.constant(1.0)
         with backprop.GradientTape() as tape:
@@ -459,11 +511,11 @@ class EagerFunctionTest(xla_test.XLATestCase):
   def testSliceInDefun(self):
     with self.test_scope():
 
-      @function.defun
+      @def_function.function
       def f(x, y):
         return x[0::2, y:, ...]
 
-      x = array_ops.ones([2, 3, 4])
+      x = array_ops.ones([2, 3, 4], dtype=dtypes.float32)
       y = array_ops.ones([], dtype=dtypes.int32)
       with backprop.GradientTape() as tape:
         tape.watch(x)
@@ -477,28 +529,28 @@ class EagerFunctionTest(xla_test.XLATestCase):
   def testNestedDefun(self):
     with self.test_scope():
 
-      @function.defun
+      @def_function.function
       def times_two(x):
-        return 2 * x
+        return 2. * x
 
-      @function.defun
+      @def_function.function
       def two_x_plus_1(x):
-        return times_two(x) + 1
+        return times_two(x) + 1.
 
-      x = constant_op.constant([2, 3, 4])
+      x = constant_op.constant([2., 3., 4.])
       y = two_x_plus_1(x)
-      self.assertAllEqual([5, 7, 9], y.numpy())
+      self.assertAllEqual([5., 7., 9.], y.numpy())
 
   def testNestedDefunWithVariable(self):
     with self.test_scope():
       v0 = resource_variable_ops.ResourceVariable(5.0)
 
-      @function.defun
+      @def_function.function
       def g(x):
         x = v0 * x
         return x
 
-      @function.defun
+      @def_function.function
       def f(x):
         x = g(v0 * x)
         return x
@@ -506,18 +558,18 @@ class EagerFunctionTest(xla_test.XLATestCase):
       x = constant_op.constant(3.0)
       y = f(x)
 
-    self.assertEqual(75, y.numpy())
+    self.assertEqual(75.0, y.numpy())
 
   def testNestedDefunInGradientTape(self):
     with self.test_scope():
       v0 = resource_variable_ops.ResourceVariable(5.0)
 
-      @function.defun
+      @def_function.function
       def g(x):
         x = v0 * x
         return x
 
-      @function.defun
+      @def_function.function
       def f(x):
         x = g(v0 * x)
         return x
@@ -535,12 +587,12 @@ class EagerFunctionTest(xla_test.XLATestCase):
       v0 = resource_variable_ops.ResourceVariable(5.0)
       v1 = resource_variable_ops.ResourceVariable(3.0)
 
-      @function.defun
+      @def_function.function
       def g(x):
         x = v1 * x
         return x
 
-      @function.defun
+      @def_function.function
       def f(x):
         x = g(v0 * x)
         return x
@@ -554,6 +606,114 @@ class EagerFunctionTest(xla_test.XLATestCase):
     self.assertEqual(45, y.numpy())
     self.assertEqual(9, dy_v0.numpy())
     self.assertEqual(15, dy_v1.numpy())
+
+  def testWhileInDefun(self):
+    with self.test_scope():
+      @def_function.function
+      def f(start):
+        c = lambda x: math_ops.less(x, 13.0)
+        b = lambda x: math_ops.add(x, 1.0)
+        return while_loop.while_loop(c, b, [start])
+
+      y = f(constant_op.constant(3.0))
+    self.assertEqual(13.0, y.numpy())
+
+  def testAutoGraphWhileInDefun(self):
+    with self.test_scope():
+      @def_function.function
+      def f(start):
+        x = start
+        while x < 13.0:
+          x += 1.0
+        return x
+
+      y = f(constant_op.constant(3.0))
+    self.assertEqual(13.0, y.numpy())
+
+  def testCondInDefun(self):
+    with self.test_scope():
+      @def_function.function
+      def f(pred, value):
+        fn1 = lambda: math_ops.add(value, 1.0)
+        fn2 = lambda: math_ops.subtract(value, 1.0)
+        return cond.cond(pred, fn1, fn2)
+
+      plus_one = f(constant_op.constant(True), constant_op.constant(10.0))
+      minus_one = f(constant_op.constant(False), constant_op.constant(10.0))
+    self.assertEqual(11.0, plus_one.numpy())
+    self.assertEqual(9.0, minus_one.numpy())
+
+  def testAutoGraphCondInDefun(self):
+    with self.test_scope():
+      @def_function.function
+      def f(pred, value):
+        if pred:
+          return value + 1.0
+        else:
+          return value - 1.0
+
+      plus_one = f(constant_op.constant(True), constant_op.constant(10.0))
+      minus_one = f(constant_op.constant(False), constant_op.constant(10.0))
+    self.assertEqual(11.0, plus_one.numpy())
+    self.assertEqual(9.0, minus_one.numpy())
+
+  def testScanInDefun(self):
+    with self.test_scope():
+      elems = constant_op.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], name='data')
+      v = constant_op.constant(2.0, name='v')
+
+      @def_function.function
+      def f(y):
+        # pylint: disable=unnecessary-lambda
+        return functional_ops.scan(
+            lambda a, x: math_ops.multiply(a, x), y, initializer=v)
+        # pylint: enable=unnecessary-lambda
+
+      r = f(elems)
+      self.assertAllEqual([2., 4., 12., 48., 240., 1440.], self.evaluate(r))
+
+  def testFeedDeviceMemoryToOpExpectingHostMemory(self):
+    @def_function.function
+    def f(dims, value):
+      return array_ops.fill(dims, value)
+
+    with self.test_scope():
+      x = constant_op.constant([4], dtype=dtypes.int64)
+
+    y = f(x, 3)
+    self.assertAllEqual([3, 3, 3, 3], y)
+
+  def testRequestNotToCompile(self):
+    with self.test_scope():
+      def f(x):
+        with ops.device('device:CPU:0'):
+          y = 2.0 * x
+        return x, y
+
+      wholly_compiled_f = def_function.function(f)
+      op_by_op_f = def_function.function(f, jit_compile=False)
+
+      x = array_ops.identity([0.0, 2.0], name='data')
+
+      # When function is wholly compiled, all outputs will be on the
+      # device on which it is run.
+      r_x, r_y = wholly_compiled_f(x)
+      self.assertAllEqual([0.0, 2.0], r_x)
+      self.assertAllEqual([0.0, 4.0], r_y)
+      if context.executing_eagerly():
+        # backing_device is only available for eager tensors.
+        self.assertRegex(r_x.backing_device, self.device)
+        self.assertRegex(r_y.backing_device, self.device)
+
+      # When function is executed op-by-op, requested devices will be
+      # respected.
+      r_x, r_y = op_by_op_f(x)
+      self.assertAllEqual([0.0, 2.0], r_x)
+      self.assertAllEqual([0.0, 4.0], r_y)
+      if context.executing_eagerly():
+        # backing_device is only available for eager tensors.
+        self.assertRegex(r_x.backing_device, self.device)
+        self.assertRegex(r_y.backing_device, 'device:CPU:0')
 
 
 class ExcessivePaddingTest(xla_test.XLATestCase):
@@ -587,7 +747,7 @@ class ExcessivePaddingTest(xla_test.XLATestCase):
   def testAsFunctionInput(self):
     with self.test_scope():
 
-      @function.defun
+      @def_function.function
       def f(x):
         return math_ops.reduce_sum(x, axis=2)
 
@@ -598,7 +758,7 @@ class ExcessivePaddingTest(xla_test.XLATestCase):
   def testAsFunctionOutput(self):
     with self.test_scope():
 
-      @function.defun
+      @def_function.function
       def f(x):
         return x * constant_op.constant(100 * [[[10.0, 2.0]]])
 

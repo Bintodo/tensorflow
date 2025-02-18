@@ -15,14 +15,14 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/test_util.h"
 
-#include "tensorflow/compiler/xla/status_macros.h"
+#include "xla/status_macros.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 
 namespace tensorflow {
 
-Status InstantiateFunctionForTest(const string& name,
-                                  const FunctionLibraryDefinition& library,
-                                  InstantiationResultForTest* result) {
+absl::Status InstantiateFunctionForTest(
+    const string& name, const FunctionLibraryDefinition& library,
+    InstantiationResultForTest* result) {
   const FunctionDef* fdef = library.Find(name);
   TF_RET_CHECK(fdef != nullptr);
 
@@ -37,15 +37,7 @@ Status InstantiateFunctionForTest(const string& name,
   for (NodeDef& n : inst.nodes) {
     *result->gdef.add_node() = std::move(n);
   }
-  return Status::OK();
-}
-
-std::unordered_map<string, Node*> BuildNodeIndex(const Graph& graph) {
-  std::unordered_map<string, Node*> index;
-  for (Node* node : graph.nodes()) {
-    index[node->name()] = node;
-  }
-  return index;
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

@@ -1,94 +1,165 @@
-licenses(["notice"])  # Apache 2.0
+load("//tensorflow:strict.default.bzl", "py_strict_library", "py_strict_test")
 
-load("//tensorflow:tensorflow.bzl", "py_test")
-
-filegroup(
-    name = "all_files",
-    srcs = glob(
-        ["**/*"],
-        exclude = [
-            "**/METADATA",
-            "**/OWNERS",
-        ],
-    ),
-    visibility = ["//tensorflow:__subpackages__"],
+package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    licenses = ["notice"],
 )
 
-py_library(
-    name = "static_analysis",
-    srcs = [
-        "activity.py",
-        "annos.py",
-        "live_values.py",
-        "liveness.py",
-        "reaching_definitions.py",
-        "type_info.py",
-    ],
-    srcs_version = "PY2AND3",
+py_strict_library(
+    name = "liveness",
+    srcs = ["liveness.py"],
     visibility = ["//visibility:public"],
     deps = [
-        "//tensorflow/python:util",
-        "//tensorflow/python/autograph/pyct",
-        "//tensorflow/python/autograph/utils",
-        "@gast_archive//:gast",
+        ":annos",
+        "//tensorflow/python/autograph/pyct:anno",
+        "//tensorflow/python/autograph/pyct:cfg",
+        "//tensorflow/python/autograph/pyct:transformer",
+        "@pypi_gast//:pkg",
     ],
 )
 
-py_test(
+py_strict_library(
+    name = "reaching_fndefs",
+    srcs = ["reaching_fndefs.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tensorflow/python/autograph/pyct:anno",
+        "//tensorflow/python/autograph/pyct:cfg",
+        "//tensorflow/python/autograph/pyct:transformer",
+        "@pypi_gast//:pkg",
+    ],
+)
+
+py_strict_test(
+    name = "reaching_fndefs_test",
+    srcs = ["reaching_fndefs_test.py"],
+    deps = [
+        ":activity",
+        ":reaching_definitions",
+        ":reaching_fndefs",
+        #internal proto upb dep
+        "//tensorflow/python/autograph/pyct:anno",
+        "//tensorflow/python/autograph/pyct:cfg",
+        "//tensorflow/python/autograph/pyct:naming",
+        "//tensorflow/python/autograph/pyct:parser",
+        "//tensorflow/python/autograph/pyct:qual_names",
+        "//tensorflow/python/autograph/pyct:transformer",
+        "//tensorflow/python/platform:client_testlib",
+    ],
+)
+
+py_strict_library(
+    name = "activity",
+    srcs = ["activity.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":annos",
+        "//tensorflow/python/autograph/pyct:anno",
+        "//tensorflow/python/autograph/pyct:qual_names",
+        "//tensorflow/python/autograph/pyct:transformer",
+        "@pypi_gast//:pkg",
+    ],
+)
+
+py_strict_library(
+    name = "type_inference",
+    srcs = ["type_inference.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":activity",
+        ":annos",
+        "//tensorflow/python/autograph/pyct:anno",
+        "//tensorflow/python/autograph/pyct:cfg",
+        "//tensorflow/python/autograph/pyct:qual_names",
+        "//tensorflow/python/autograph/pyct:transformer",
+        "@pypi_gast//:pkg",
+    ],
+)
+
+py_strict_library(
+    name = "reaching_definitions",
+    srcs = ["reaching_definitions.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//tensorflow/python/autograph/pyct:anno",
+        "//tensorflow/python/autograph/pyct:cfg",
+        "//tensorflow/python/autograph/pyct:transformer",
+        "@pypi_gast//:pkg",
+    ],
+)
+
+py_strict_library(
+    name = "annos",
+    srcs = ["annos.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_strict_test(
     name = "activity_test",
     srcs = ["activity_test.py"],
-    srcs_version = "PY2AND3",
-    tags = ["no_windows"],
     deps = [
-        ":static_analysis",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/autograph/pyct",
-        "@gast_archive//:gast",
+        ":activity",
+        ":annos",
+        "@pypi_gast//:pkg",
+        #internal proto upb dep
+        "//tensorflow/python/autograph/pyct:anno",
+        "//tensorflow/python/autograph/pyct:naming",
+        "//tensorflow/python/autograph/pyct:parser",
+        "//tensorflow/python/autograph/pyct:qual_names",
+        "//tensorflow/python/autograph/pyct:transformer",
+        "//tensorflow/python/platform:client_testlib",
     ],
 )
 
-py_test(
-    name = "live_values_test",
-    srcs = ["live_values_test.py"],
-    srcs_version = "PY2AND3",
-    tags = ["no_windows"],
-    deps = [
-        ":static_analysis",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/autograph/pyct",
-    ],
-)
-
-py_test(
+py_strict_test(
     name = "liveness_test",
+    testonly = True,
     srcs = ["liveness_test.py"],
-    srcs_version = "PY2AND3",
     deps = [
-        ":static_analysis",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/autograph/pyct",
+        ":activity",
+        ":liveness",
+        ":reaching_fndefs",
+        #internal proto upb dep
+        "//tensorflow/python/autograph/pyct:anno",
+        "//tensorflow/python/autograph/pyct:cfg",
+        "//tensorflow/python/autograph/pyct:naming",
+        "//tensorflow/python/autograph/pyct:parser",
+        "//tensorflow/python/autograph/pyct:qual_names",
+        "//tensorflow/python/autograph/pyct:transformer",
+        "//tensorflow/python/platform:client_testlib",
     ],
 )
 
-py_test(
+py_strict_test(
     name = "reaching_definitions_test",
     srcs = ["reaching_definitions_test.py"],
-    srcs_version = "PY2AND3",
     deps = [
-        ":static_analysis",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/autograph/pyct",
+        ":activity",
+        ":reaching_definitions",
+        #internal proto upb dep
+        "//tensorflow/python/autograph/pyct:anno",
+        "//tensorflow/python/autograph/pyct:cfg",
+        "//tensorflow/python/autograph/pyct:naming",
+        "//tensorflow/python/autograph/pyct:parser",
+        "//tensorflow/python/autograph/pyct:qual_names",
+        "//tensorflow/python/autograph/pyct:transformer",
+        "//tensorflow/python/platform:client_testlib",
     ],
 )
 
-py_test(
-    name = "type_info_test",
-    srcs = ["type_info_test.py"],
-    srcs_version = "PY2AND3",
+py_strict_test(
+    name = "type_inference_test",
+    srcs = ["type_inference_test.py"],
     deps = [
-        ":static_analysis",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/autograph/pyct",
-        "//tensorflow/python/autograph/utils",
+        ":activity",
+        ":reaching_definitions",
+        ":reaching_fndefs",
+        ":type_inference",
+        #internal proto upb dep
+        "//tensorflow/python/autograph/pyct:anno",
+        "//tensorflow/python/autograph/pyct:cfg",
+        "//tensorflow/python/autograph/pyct:qual_names",
+        "//tensorflow/python/autograph/pyct:transpiler",
+        "//tensorflow/python/platform:client_testlib",
     ],
 )

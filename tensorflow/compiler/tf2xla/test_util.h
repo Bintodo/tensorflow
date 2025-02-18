@@ -40,12 +40,9 @@ struct InstantiationResultForTest {
 
 // Instantiates a function, producing a GraphDef to compare against the
 // expected graph.
-Status InstantiateFunctionForTest(const string& name,
-                                  const FunctionLibraryDefinition& library,
-                                  InstantiationResultForTest* result);
-
-// Builds a map from node name to Node* for `graph`.
-std::unordered_map<string, Node*> BuildNodeIndex(const Graph& graph);
+absl::Status InstantiateFunctionForTest(
+    const string& name, const FunctionLibraryDefinition& library,
+    InstantiationResultForTest* result);
 
 }  // namespace tensorflow
 

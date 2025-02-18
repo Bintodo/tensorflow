@@ -13,42 +13,46 @@
 # limitations under the License.
 # ==============================================================================
 """Datasets for random number generators."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+import functools
 
+from tensorflow.python import tf2
+from tensorflow.python.compat import v2_compat
 from tensorflow.python.data.ops import dataset_ops
-from tensorflow.python.data.util import random_seed
-from tensorflow.python.framework import dtypes
-from tensorflow.python.framework import ops
-from tensorflow.python.framework import tensor_shape
-from tensorflow.python.ops import gen_dataset_ops
+from tensorflow.python.data.ops import random_op
+from tensorflow.python.util import deprecation
 from tensorflow.python.util.tf_export import tf_export
 
 
-@tf_export("data.experimental.RandomDataset")
-class RandomDataset(dataset_ops.DatasetSource):
+# TODO(b/260143413): Migrate users to `tf.data.Dataset.random`.
+@deprecation.deprecated(None, "Use `tf.data.Dataset.random(...)`.")
+@tf_export("data.experimental.RandomDataset", v1=[])
+class RandomDatasetV2(random_op._RandomDataset):  # pylint: disable=protected-access
   """A `Dataset` of pseudorandom values."""
 
+
+@deprecation.deprecated(None, "Use `tf.data.Dataset.random(...)`.")
+@tf_export(v1=["data.experimental.RandomDataset"])
+class RandomDatasetV1(dataset_ops.DatasetV1Adapter):
+  """A `Dataset` of pseudorandom values."""
+
+  @functools.wraps(RandomDatasetV2.__init__)
   def __init__(self, seed=None):
-    """A `Dataset` of pseudorandom values."""
-    super(RandomDataset, self).__init__()
-    self._seed, self._seed2 = random_seed.get_seed(seed)
+    wrapped = RandomDatasetV2(seed)
+    super(RandomDatasetV1, self).__init__(wrapped)
 
-  def _as_variant_tensor(self):
-    return gen_dataset_ops.random_dataset(
-        seed=self._seed,
-        seed2=self._seed2,
-        **dataset_ops.flat_structure(self))
 
-  @property
-  def output_classes(self):
-    return ops.Tensor
+if tf2.enabled():
+  RandomDataset = RandomDatasetV2
+else:
+  RandomDataset = RandomDatasetV1
 
-  @property
-  def output_shapes(self):
-    return tensor_shape.scalar()
 
-  @property
-  def output_types(self):
-    return dtypes.int64
+def _tf2_callback():
+  global RandomDataset
+  if tf2.enabled():
+    RandomDataset = RandomDatasetV2
+  else:
+    RandomDataset = RandomDatasetV1
+
+
+v2_compat.register_data_v2_callback(_tf2_callback)

@@ -13,9 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <utility>
-
 #include "tensorflow/core/util/example_proto_fast_parsing.h"
+
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "tensorflow/core/example/example.pb.h"
 #include "tensorflow/core/example/feature.pb.h"
@@ -170,6 +172,10 @@ TEST(FastParse, Packed) {
       "\x0a\x0d\x0a\x0b\x0a\x03\x61\x67\x65\x12\x04\x1a\x02\x08\x0d");
 }
 
+TEST(FastParse, ValueBeforeKeyInMap) {
+  TestCorrectness("\x0a\x12\x0a\x10\x12\x09\x0a\x07\x0a\x05value\x0a\x03key");
+}
+
 TEST(FastParse, EmptyFeatures) {
   Example example;
   example.mutable_features();
@@ -273,7 +279,7 @@ static void AddSparseFeature(const char* feature_name, DataType dtype,
 
 TEST(FastParse, StatsCollection) {
   const size_t kNumExamples = 13;
-  std::vector<string> serialized(kNumExamples, ExampleWithSomeFeatures());
+  std::vector<tstring> serialized(kNumExamples, ExampleWithSomeFeatures());
 
   FastParseExampleConfig config_dense;
   AddDenseFeature("bytes_list", DT_STRING, {2}, false, 2, &config_dense);
@@ -417,8 +423,9 @@ TEST(TestFastParseExample, Empty) {
   Result result;
   FastParseExampleConfig config;
   config.sparse.push_back({"test", DT_STRING});
-  Status status = FastParseExample(config, gtl::ArraySlice<string>(),
-                                   gtl::ArraySlice<string>(), nullptr, &result);
+  absl::Status status =
+      FastParseExample(config, absl::Span<const tstring>(),
+                       absl::Span<const tstring>(), nullptr, &result);
   EXPECT_TRUE(status.ok()) << status;
 }
 

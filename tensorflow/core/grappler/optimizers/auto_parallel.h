@@ -33,11 +33,10 @@ class AutoParallel : public GraphOptimizer {
 
   string name() const override { return "autoparallel"; };
 
-  Status Optimize(Cluster* cluster, const GrapplerItem& item,
-                  GraphDef* output) override;
+  bool UsesFunctionLibrary() const override { return false; }
 
-  void Feedback(Cluster* cluster, const GrapplerItem& item,
-                const GraphDef& optimize_output, double result) override;
+  absl::Status Optimize(Cluster* cluster, const GrapplerItem& item,
+                        GraphDef* output) override;
 
  private:
   GraphDef graph_;
@@ -48,7 +47,7 @@ class AutoParallel : public GraphOptimizer {
   const GrapplerItem* item_;
   int num_replicas_;
   int num_gpus_;
-  Status Initialize(const GrapplerItem& item);
+  absl::Status Initialize(const GrapplerItem& item);
   NodeDef* AddNodeDivConst();
   NodeDef* AddNodeDiv(const string& name, const string& input_a,
                       const string& input_b);

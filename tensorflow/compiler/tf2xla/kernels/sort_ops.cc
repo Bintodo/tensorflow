@@ -13,23 +13,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/compiler/tf2xla/mlir_xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
+#include "xla/hlo/builder/lib/comparators.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "tensorflow/core/framework/op_kernel.h"
 
 namespace tensorflow {
 namespace {
 
-class XlaSortOp : public XlaOpKernel {
- public:
-  explicit XlaSortOp(OpKernelConstruction* context) : XlaOpKernel(context) {}
-
-  void Compile(XlaOpKernelContext* context) override {
-    context->SetOutput(0, xla::Sort(context->Input("input")));
-  }
-};
-
-REGISTER_XLA_OP(Name("XlaSort"), XlaSortOp);
+REGISTER_XLA_OP(Name("XlaSort"), MlirXlaOpKernel);
 
 class XlaKeyValueSortOp : public XlaOpKernel {
  public:
@@ -37,14 +31,18 @@ class XlaKeyValueSortOp : public XlaOpKernel {
       : XlaOpKernel(context) {}
 
   void Compile(XlaOpKernelContext* context) override {
-    xla::XlaOp result =
-        xla::Sort(context->Input("keys"), context->Input("values"));
+    xla::XlaOp result = xla::Sort(
+        {context->Input("keys"), context->Input("values")},
+        xla::CreateScalarLtComputation(
+            {context->InputXlaType("keys"), context->InputXlaType("values")},
+            context->builder()));
     context->SetOutput(0, xla::GetTupleElement(result, 0));
     context->SetOutput(1, xla::GetTupleElement(result, 1));
   }
 };
 
 REGISTER_XLA_OP(Name("XlaKeyValueSort"), XlaKeyValueSortOp);
-
+REGISTER_XLA_OP(Name("XlaVariadicSort").CompileTimeConstantInput("dimension"),
+                MlirXlaOpKernel);
 }  // namespace
 }  // namespace tensorflow

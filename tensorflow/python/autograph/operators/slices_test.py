@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for slices module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.autograph.operators import slices
 from tensorflow.python.framework import constant_op
 from tensorflow.python.ops import list_ops
@@ -34,7 +30,7 @@ class SlicesTest(test.TestCase):
 
     with self.cached_session() as sess:
       t = list_ops.tensor_list_stack(l, element_dtype=initial_list.dtype)
-      self.assertAllEqual(sess.run(t), [[5, 6], [3, 4]])
+      self.assertAllEqual(self.evaluate(t), [[5, 6], [3, 4]])
 
   def test_get_item_tensor_list(self):
     initial_list = constant_op.constant([[1, 2], [3, 4]])
@@ -44,7 +40,7 @@ class SlicesTest(test.TestCase):
         l, 1, slices.GetItemOpts(element_dtype=initial_list.dtype))
 
     with self.cached_session() as sess:
-      self.assertAllEqual(sess.run(t), [3, 4])
+      self.assertAllEqual(self.evaluate(t), [3, 4])
 
   def test_get_item_tensor_string(self):
     initial_str = constant_op.constant('abcd')
@@ -52,14 +48,14 @@ class SlicesTest(test.TestCase):
                         slices.GetItemOpts(element_dtype=initial_str.dtype))
 
     with self.cached_session() as sess:
-      self.assertEqual(sess.run(t), b'b')
+      self.assertEqual(self.evaluate(t), b'b')
 
     initial_list_str = constant_op.constant(['abcd', 'bcde'])
     t = slices.get_item(initial_list_str, 1,
                         slices.GetItemOpts(element_dtype=initial_str.dtype))
 
     with self.cached_session() as sess:
-      self.assertEqual(sess.run(t), b'bcde')
+      self.assertEqual(self.evaluate(t), b'bcde')
 
 
 if __name__ == '__main__':

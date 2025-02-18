@@ -1,10 +1,11 @@
+load("//tensorflow:tensorflow.default.bzl", "tf_gen_op_wrapper_cc")
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
+
 package(
-    default_visibility = ["//tensorflow/compiler/tf2xla:internal"],
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    default_visibility = ["//tensorflow/compiler/tf2xla:friends"],
+    licenses = ["notice"],
 )
-
-licenses(["notice"])  # Apache 2.0
-
-load("//tensorflow:tensorflow.bzl", "tf_gen_op_wrapper_cc")
 
 tf_gen_op_wrapper_cc(
     name = "xla_ops_gen",

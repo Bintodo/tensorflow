@@ -13,7 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/cc/framework/ops.h"
+#include "tensorflow/cc/framework/scope.h"
+#include "tensorflow/cc/ops/array_ops.h"
+#include "tensorflow/cc/ops/no_op.h"
+#include "tensorflow/cc/ops/parsing_ops.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/fuzzing/fuzz_session.h"
 
 namespace tensorflow {
@@ -22,7 +27,7 @@ namespace fuzzing {
 class FuzzDecodeCompressed : public FuzzStringInputOp {
   void BuildGraph(const Scope& scope) override {
     auto input =
-        tensorflow::ops::Placeholder(scope.WithOpName("input1"), DT_STRING);
+        tensorflow::ops::Placeholder(scope.WithOpName("input"), DT_STRING);
     auto d1 = tensorflow::ops::DecodeCompressed(
         scope.WithOpName("d1"), input,
         tensorflow::ops::DecodeCompressed::CompressionType(""));

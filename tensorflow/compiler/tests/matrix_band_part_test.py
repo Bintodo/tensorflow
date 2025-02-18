@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
@@ -167,8 +163,13 @@ class MatrixBandPartTest(xla_test.XLATestCase, parameterized.TestCase):
       },
   )
   def testMatrixBandPart(self, batch_shape, rows, cols):
+    # TODO(b/125505881): Disabled due to LLVM backend crash.
+    if self.device == 'XLA_CPU' and cols == 7 and rows == 1 and batch_shape == [
+        1, 3, 2
+    ]:
+      pass
     for dtype in self.float_types:
-      with self.cached_session():
+      with self.session():
         mat = np.ones(batch_shape + [rows, cols]).astype(dtype)
         batch_mat = np.tile(mat, batch_shape + [1, 1])
         for lower in -1, 0, 1, rows - 1:

@@ -38,8 +38,8 @@ struct Frame {
 };
 
 // Verify that the ControlFlowInfo of the graph has valid loop structure.
-Status ValidateControlFlowInfo(const Graph* graph,
-                               const std::vector<ControlFlowInfo>& cf_info) {
+absl::Status ValidateControlFlowInfo(
+    const Graph* graph, const std::vector<ControlFlowInfo>& cf_info) {
   std::unordered_map<string, Frame> frames;
   for (const Node* node : graph->op_nodes()) {
     const ControlFlowInfo& cf = cf_info[node->id()];
@@ -59,7 +59,7 @@ Status ValidateControlFlowInfo(const Graph* graph,
           "Invalid loop structure: Mismatched parent frames for \"",
           cf.frame_name, "\": \"", parent->name, "\" vs \"", frame.parent->name,
           "\". The node giving this error: ", FormatNodeForError(*node),
-          "This is an internal bug, please file a bug report with "
+          ". This is an internal bug, please file a bug report with "
           "instructions on how to reproduce the error.");
     }
     if (IsLoopCond(node)) {
@@ -67,8 +67,8 @@ Status ValidateControlFlowInfo(const Graph* graph,
       // BackPropLoopCounter runs in the same frame as the backprop loop. They
       // are the only cases that multiple loops share the same frame.
       if (frame.loop_cond &&
-          !str_util::StrContains(frame.loop_cond->name(), "LoopCounter") &&
-          !str_util::StrContains(node->name(), "LoopCounter")) {
+          !absl::StrContains(frame.loop_cond->name(), "LoopCounter") &&
+          !absl::StrContains(node->name(), "LoopCounter")) {
         return errors::InvalidArgument(
             "Invalid loop structure: Loop \"", cf.frame_name,
             "\" has more than one LoopCond node: ", FormatNodeForError(*node),
@@ -79,12 +79,13 @@ Status ValidateControlFlowInfo(const Graph* graph,
       frame.loop_cond = node;
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 }  // namespace
 
-Status BuildControlFlowInfo(const Graph* g, std::vector<ControlFlowInfo>* info,
-                            std::vector<string>* unreachable_nodes) {
+absl::Status BuildControlFlowInfo(const Graph* g,
+                                  std::vector<ControlFlowInfo>* info,
+                                  std::vector<string>* unreachable_nodes) {
   info->clear();
   info->resize(g->num_node_ids());
 
@@ -180,7 +181,7 @@ Status BuildControlFlowInfo(const Graph* g, std::vector<ControlFlowInfo>* info,
     }
   }
   TF_RETURN_IF_ERROR(ValidateControlFlowInfo(g, *info));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

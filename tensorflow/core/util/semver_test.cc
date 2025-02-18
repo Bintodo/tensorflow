@@ -32,14 +32,14 @@ bool IsDotOrIdentifierChar(char c) {
   return false;
 }
 
-bool ConsumeDotSeparatedIdentifiers(StringPiece* s, const string& prefix,
-                                    StringPiece* val) {
-  if (!str_util::ConsumePrefix(s, prefix)) return false;
+bool ConsumeDotSeparatedIdentifiers(absl::string_view* s, const string& prefix,
+                                    absl::string_view* val) {
+  if (!absl::ConsumePrefix(s, prefix)) return false;
   size_t i;
   for (i = 0; i < s->size() && IsDotOrIdentifierChar((*s)[i]); ++i) {
     // Intentionally empty
   }
-  *val = StringPiece(s->data(), i);
+  *val = absl::string_view(s->data(), i);
   s->remove_prefix(i);
   return i > 0;
 }
@@ -50,20 +50,20 @@ TEST(SemverTest, VersionStringFollowsSemver) {
   // free to refine further (for example, check for leading 0s in numbers), but
   // avoid adding dependencies.
   uint64 major, minor, patch;
-  StringPiece prerelease, metadata;
-  StringPiece semver(TF_VERSION_STRING);
+  absl::string_view prerelease, metadata;
+  absl::string_view semver(TF_VERSION_STRING);
 
   ASSERT_TRUE(str_util::ConsumeLeadingDigits(&semver, &major));
-  ASSERT_TRUE(str_util::ConsumePrefix(&semver, "."));
+  ASSERT_TRUE(absl::ConsumePrefix(&semver, "."));
   ASSERT_TRUE(str_util::ConsumeLeadingDigits(&semver, &minor));
-  ASSERT_TRUE(str_util::ConsumePrefix(&semver, "."));
+  ASSERT_TRUE(absl::ConsumePrefix(&semver, "."));
   // Till 0.11.0rc2, the prerelease version was (incorrectly) not separated from
   // the patch version number. Let that slide.
   // Remove this when TF_VERSION_STRING moves beyond 0.11.0rc2.
   if (major == 0 && minor <= 11) {
     return;
   }
-  if (str_util::ConsumePrefix(&semver, "head")) {
+  if (absl::ConsumePrefix(&semver, "head")) {
     ASSERT_TRUE(semver.empty());
     return;
   }

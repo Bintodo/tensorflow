@@ -13,15 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/compiler/tf2xla/cpu_function_runtime.h"
-
+#include "xla/cpu_function_runtime.h"
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
 namespace {
 
-using cpu_function_runtime::BufferInfo;
+using ::xla::cpu_function_runtime::BufferInfo;
 
 TEST(XlaCompiledCpuFunctionTest, AlignmentValue) {
   // We've chosen 64 byte alignment for the tfcompile runtime to mimic the
@@ -29,7 +28,9 @@ TEST(XlaCompiledCpuFunctionTest, AlignmentValue) {
   // The tfcompile runtime also has a requirement that comes from the xla
   // generated code, on the relation: buffer_size >= 16 ? 2 * sizeof(void*) : 8
   // So any value that we choose must abide by that constraint as well.
-  EXPECT_EQ(cpu_function_runtime::kAlign, Allocator::kAllocatorAlignment);
+  EXPECT_EQ(xla::cpu_function_runtime::Align(), Allocator::kAllocatorAlignment);
+  EXPECT_LE(xla::cpu_function_runtime::MinAlign(),
+            Allocator::kAllocatorAlignment);
 }
 
 std::vector<BufferInfo> SizesToBufferInfos(const intptr_t* sizes, size_t n) {
@@ -39,7 +40,7 @@ std::vector<BufferInfo> SizesToBufferInfos(const intptr_t* sizes, size_t n) {
                    if (size == -1) {
                      // Use a dummy on-stack buffer allocation to indicat the
                      // the current slot does not need an allocation.
-                     int64 on_stack_buffer_size = 4;
+                     int64_t on_stack_buffer_size = 4;
                      return BufferInfo::MakeOnStackBuffer(on_stack_buffer_size);
                    }
                    return BufferInfo::MakeTempBuffer(size);
@@ -91,7 +92,7 @@ TEST(XlaCompiledCpuFunctionTest, MallocFreeContiguousBuffers) {
   // Test empty sizes.
   void* base = MallocContiguousBuffersFromSizes(nullptr, 0, nullptr, false);
   EXPECT_EQ(base, nullptr);
-  cpu_function_runtime::FreeContiguous(base);
+  xla::cpu_function_runtime::FreeContiguous(base);
 
   // Test non-empty sizes with 0 sum.
   static constexpr intptr_t sizesA[1] = {-1};
@@ -99,7 +100,7 @@ TEST(XlaCompiledCpuFunctionTest, MallocFreeContiguousBuffers) {
   base = MallocContiguousBuffersFromSizes(sizesA, 1, bufA, false);
   EXPECT_EQ(base, nullptr);
   EXPECT_EQ(bufA[0], nullptr);
-  cpu_function_runtime::FreeContiguous(base);
+  xla::cpu_function_runtime::FreeContiguous(base);
 
   // Test non-empty sizes with non-0 sum.
   static constexpr intptr_t sizesB[1] = {3};
@@ -111,7 +112,7 @@ TEST(XlaCompiledCpuFunctionTest, MallocFreeContiguousBuffers) {
   bufB0_bytes[0] = 'A';
   bufB0_bytes[1] = 'B';
   bufB0_bytes[2] = 'C';
-  cpu_function_runtime::FreeContiguous(base);
+  xla::cpu_function_runtime::FreeContiguous(base);
 
   // Test non-empty sizes with non-0 sum, and annotate_initialized.
   static constexpr intptr_t sizesC[1] = {3};
@@ -123,7 +124,7 @@ TEST(XlaCompiledCpuFunctionTest, MallocFreeContiguousBuffers) {
   bufC0_bytes[0] = 'A';
   bufC0_bytes[1] = 'B';
   bufC0_bytes[2] = 'C';
-  cpu_function_runtime::FreeContiguous(base);
+  xla::cpu_function_runtime::FreeContiguous(base);
 
   // Test mixed sizes.
   static constexpr intptr_t sizesD[7] = {1, -1, 32, -1, 64, 2, 3};
@@ -146,7 +147,7 @@ TEST(XlaCompiledCpuFunctionTest, MallocFreeContiguousBuffers) {
       }
     }
   }
-  cpu_function_runtime::FreeContiguous(base);
+  xla::cpu_function_runtime::FreeContiguous(base);
 }
 
 void CheckRoundTripIsOk(const BufferInfo& buffer_info) {

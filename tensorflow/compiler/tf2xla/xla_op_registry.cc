@@ -17,18 +17,36 @@ limitations under the License.
 
 #include <functional>
 #include <memory>
+#include <string>
 
-#include "tensorflow/compiler/tf2xla/type_util.h"
-#include "tensorflow/compiler/tf2xla/xla_context.h"
-#include "tensorflow/compiler/xla/client/client_library.h"
-#include "tensorflow/core/common_runtime/device_factory.h"
-#include "tensorflow/core/common_runtime/local_device.h"
+#include "absl/algorithm/container.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_join.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
+#include "tensorflow/compiler/jit/flags.h"
+#include "tensorflow/compiler/jit/xla_cluster_util.h"
+#include "xla/util.h"
+#include "tensorflow/core/common_runtime/next_pluggable_device/next_pluggable_device_factory.h"
 #include "tensorflow/core/framework/device_base.h"
+#include "tensorflow/core/framework/device_factory.h"
 #include "tensorflow/core/framework/kernel_def.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
+#include "tensorflow/core/framework/node_def_util.h"
+#include "tensorflow/core/framework/op.h"
+#include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/framework/op_def_util.h"
-#include "tensorflow/core/platform/mem.h"
-#include "tensorflow/core/platform/stream_executor_no_cuda.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/mutex.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/tfrt/common/pjrt_util.h"
+#include "tsl/platform/errors.h"
+#include "tsl/platform/status.h"
 
 namespace tensorflow {
 
@@ -37,7 +55,7 @@ const char* const DEVICE_GPU_XLA_JIT = "XLA_GPU_JIT";
 const char* const DEVICE_XLA_CPU = "XLA_CPU";
 const char* const DEVICE_XLA_GPU = "XLA_GPU";
 
-static Status LaunchOpHasKernelForDevice(const DeviceType& device_type) {
+static absl::Status LaunchOpHasKernelForDevice(const DeviceType& device_type) {
   const OpDef* op_def;
   TF_RETURN_IF_ERROR(OpRegistry::Global()->LookUpOpDef("XlaLaunch", &op_def));
   NodeDef node_def;
@@ -48,7 +66,7 @@ static Status LaunchOpHasKernelForDevice(const DeviceType& device_type) {
                                    &kernel_class_name));
   VLOG(1) << "LaunchOpHasKernelForDevice"
           << " kernel_class_name: " << kernel_class_name;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 XlaOpRegistry::XlaOpRegistry() = default;
@@ -59,8 +77,9 @@ XlaOpRegistry::~XlaOpRegistry() = default;
 /* static */ bool XlaOpRegistry::IsCompatible(const OpRegistration& x,
                                               const OpRegistration& y) {
   if (x.name != y.name) return true;
+  if (x.label != y.label) return true;
   // The registrations refer to the same Op: ensures they are compatible and
-  // are restricted to different device whitelists.
+  // are restricted to different device allowlists.
   if (x.compilation_only != y.compilation_only) {
     LOG(WARNING) << "Registrations of " << x.name
                  << " have incompatible compilation_only settings.";
@@ -71,14 +90,24 @@ XlaOpRegistry::~XlaOpRegistry() = default;
                  << " have incompatible allow_resource_types settings.";
     return false;
   }
-  if (!x.has_device_whitelist && !y.has_device_whitelist) {
-    LOG(WARNING) << "Duplicate registrations of " << x.name
-                 << "with no device whitelists.";
+  if (x.allow_variant_types != y.allow_variant_types) {
+    LOG(WARNING) << "Registrations of " << x.name
+                 << " have incompatible allow_variant_types settings.";
     return false;
   }
-  if (x.has_device_whitelist && y.has_device_whitelist) {
-    for (const auto& device : x.device_whitelist) {
-      if (y.device_whitelist.count(device) != 0) {
+  if (x.allow_string_type != y.allow_string_type) {
+    LOG(WARNING) << "Registrations of " << x.name
+                 << " have incompatible allow_string_type settings.";
+    return false;
+  }
+  if (!x.has_device_allowlist && !y.has_device_allowlist) {
+    LOG(WARNING) << "Duplicate registrations of " << x.name
+                 << " with no device allowlists.";
+    return false;
+  }
+  if (x.has_device_allowlist && y.has_device_allowlist) {
+    for (const auto& device : x.device_allowlist) {
+      if (y.device_allowlist.count(device) != 0) {
         LOG(WARNING) << "Multiple registrations of " << x.name << " on device "
                      << device;
         return false;
@@ -121,6 +150,13 @@ XlaOpRegistry::~XlaOpRegistry() = default;
   result.first->second.op_filter = op_filter;
 }
 
+/* static */ bool XlaOpRegistry::IsCompilationDevice(
+    const string& device_name) {
+  XlaOpRegistry& registry = Instance();
+  mutex_lock lock(registry.mutex_);
+  return registry.backends_.find(device_name) != registry.backends_.end();
+}
+
 /* static */ bool XlaOpRegistry::GetCompilationDevice(
     const string& device_name, const DeviceRegistration** registration) {
   XlaOpRegistry& registry = Instance();
@@ -128,26 +164,52 @@ XlaOpRegistry::~XlaOpRegistry() = default;
   // Lazily register the CPU and GPU JIT devices the first time
   // GetCompilationDevice is called.
   static void* registration_init = [&registry]() {
+    MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
+    bool cpu_global_jit = flags->tf_xla_cpu_global_jit;
+    VLOG(2) << "tf_xla_cpu_global_jit = " << cpu_global_jit;
+
     mutex_lock lock(registry.mutex_);
     if (LaunchOpHasKernelForDevice(DeviceType(DEVICE_CPU)).ok()) {
       DeviceRegistration& registration =
           registry.compilation_devices_[DEVICE_CPU];
       registration.compilation_device_name = DEVICE_CPU_XLA_JIT;
-      registration.requires_compilation = false;
-      registration.enable_jit_by_default = false;
-      registration.compile_resource_ops = false;
+      registration.autoclustering_policy =
+          cpu_global_jit
+              ? XlaOpRegistry::AutoclusteringPolicy::kIfEnabledGlobally
+              : XlaOpRegistry::AutoclusteringPolicy::kIfExplicitlyRequested;
     }
     if (LaunchOpHasKernelForDevice(DeviceType(DEVICE_GPU)).ok()) {
       DeviceRegistration& registration =
           registry.compilation_devices_[DEVICE_GPU];
       registration.compilation_device_name = DEVICE_GPU_XLA_JIT;
-      registration.requires_compilation = false;
-      registration.enable_jit_by_default = true;
-      registration.compile_resource_ops = false;
+      registration.autoclustering_policy =
+          XlaOpRegistry::AutoclusteringPolicy::kIfEnabledGlobally;
     }
     return nullptr;
   }();
   (void)registration_init;
+
+  // Register GPU JIT devices for NextPluggableDevice if its jit_device_type is
+  // `XLA_GPU_JIT`.
+  if (DeviceFactory::IsPluggableDevice(device_name) &&
+      GetPjRtClient(DeviceType(device_name)).ok()) {
+    mutex_lock lock(registry.mutex_);
+
+    NextPluggableDeviceFactory* device_factory =
+        static_cast<NextPluggableDeviceFactory*>(
+            DeviceFactory::GetFactory(device_name));
+    if (device_factory != nullptr &&
+        DeviceType(device_factory->compilation_device_name()) ==
+            DeviceType(DEVICE_GPU_XLA_JIT) &&
+        registry.compilation_devices_.find(device_name) ==
+            registry.compilation_devices_.end()) {
+      DeviceRegistration& registration =
+          registry.compilation_devices_[device_name];
+      registration.compilation_device_name = DEVICE_GPU_XLA_JIT;
+      registration.autoclustering_policy =
+          XlaOpRegistry::AutoclusteringPolicy::kIfEnabledGlobally;
+    }
+  }
 
   mutex_lock lock(registry.mutex_);
   auto it = registry.compilation_devices_.find(device_name);
@@ -168,36 +230,36 @@ void XlaOpRegistry::RegisterCompilationKernels() {
   // The goal is to allow the co-existence of backend-specific kernels and
   // generic kernels. To achieve this, we enforce the following order of
   // registrations for one op:
-  // 1. Process op registration with device whitelists:
+  // 1. Process op registration with device allowlists:
   //      this pass registers backend-specific kernels for this op.
-  // 2. Process op registration without device whitelists:
+  // 2. Process op registration without device allowlists:
   //      this pass registers the kernels for all the other supported backends.
   for (auto& ops : registry.ops_) {
     const string& op_name = ops.first;
     std::vector<std::unique_ptr<OpRegistration>>& op_registrations = ops.second;
-    // Partition the op registration so that the ones with device whitelists
-    // precede the one without device whitelist.
+    // Partition the op registration so that the ones with device allowlists
+    // precede the one without device allowlist.
     std::partition(op_registrations.begin(), op_registrations.end(),
                    [](const std::unique_ptr<OpRegistration>& op_reg) {
-                     return op_reg->has_device_whitelist;
+                     return op_reg->has_device_allowlist;
                    });
 
-    // Collect a set of backend registered by ops with device whitelists.
-    // The op registration without whitelists will register a generic kernel
+    // Collect a set of backend registered by ops with device allowlists.
+    // The op registration without allowlists will register a generic kernel
     // for all other backends not in this set.
-    std::unordered_set<string> whitelisted_backend;
+    std::unordered_set<string> allowlisted_backend;
     for (auto& op_registration : op_registrations) {
-      if (op_registration->has_device_whitelist) {
-        whitelisted_backend.insert(op_registration->device_whitelist.begin(),
-                                   op_registration->device_whitelist.end());
+      if (op_registration->has_device_allowlist) {
+        allowlisted_backend.insert(op_registration->device_allowlist.begin(),
+                                   op_registration->device_allowlist.end());
       }
     }
 
     for (auto& op_registration : op_registrations) {
       const OpDef* op_def;
-      Status lookup_status = op_registry->LookUpOpDef(op_name, &op_def);
+      absl::Status lookup_status = op_registry->LookUpOpDef(op_name, &op_def);
       if (!lookup_status.ok()) {
-        LOG(ERROR) << lookup_status.error_message();
+        LOG(ERROR) << lookup_status.message();
         XLA_LOG_LINES(
             ERROR,
             "Ops registered: \n" +
@@ -221,25 +283,26 @@ void XlaOpRegistry::RegisterCompilationKernels() {
       }
 
       for (auto& backend : registry.backends_) {
-        // If the operator has a device whitelist, only register on whitelisted
+        // If the operator has a device allowlist, only register on allowlisted
         // devices.
-        if (op_registration->has_device_whitelist &&
-            op_registration->device_whitelist.find(backend.first) ==
-                op_registration->device_whitelist.end()) {
+        if (op_registration->has_device_allowlist &&
+            op_registration->device_allowlist.find(backend.first) ==
+                op_registration->device_allowlist.end()) {
           continue;
         }
 
-        // If the operator does NOT has a device whitelist, skip all devices
+        // If the operator does NOT has a device allowlist, skip all devices
         // that has already been registered.
-        if (!op_registration->has_device_whitelist &&
-            whitelisted_backend.find(backend.first) !=
-                whitelisted_backend.end()) {
+        if (!op_registration->has_device_allowlist &&
+            allowlisted_backend.find(backend.first) !=
+                allowlisted_backend.end()) {
           continue;
         }
 
         std::unique_ptr<KernelDef> kdef(new KernelDef);
         kdef->set_op(op_registration->name);
         kdef->set_device_type(backend.first);
+        kdef->set_label(op_registration->label);
 
         // Constrain each type attribute to the intersection of:
         // a) the types supported by the backend, and
@@ -282,6 +345,12 @@ void XlaOpRegistry::RegisterCompilationKernels() {
           if (op_registration->allow_resource_types) {
             allowed_values->add_type(DT_RESOURCE);
           }
+          if (op_registration->allow_variant_types) {
+            allowed_values->add_type(DT_VARIANT);
+          }
+          if (op_registration->allow_string_type) {
+            allowed_values->add_type(DT_STRING);
+          }
           // Don't build KernelDefs that have unsatisfiable type constraints.
           if (allowed_values->type().empty()) {
             unsatisfiable_type_constraint = true;
@@ -312,10 +381,14 @@ std::vector<const KernelDef*> XlaOpRegistry::DeviceKernels(
   RegisterCompilationKernels();
   std::vector<const KernelDef*> kernels;
   XlaOpRegistry& registry = Instance();
+  std::string registered_backends =
+      absl::StrJoin(registry.BackendNames(), ", ");
   mutex_lock lock(registry.mutex_);
   auto it = registry.backends_.find(compilation_device_name);
+
   CHECK(it != registry.backends_.end())
-      << "Unknown backend " << compilation_device_name;
+      << "Unknown backend " << compilation_device_name
+      << "; Known backends are: " << registered_backends;
   for (const std::unique_ptr<KernelDef>& k : it->second.kernel_defs) {
     auto op_iter = registry.ops_.find(k->op());
     CHECK(op_iter != registry.ops_.end() && !op_iter->second.empty());
@@ -334,6 +407,7 @@ std::vector<const KernelDef*> XlaOpRegistry::DeviceKernels(
   std::vector<string> ops;
   XlaOpRegistry& registry = Instance();
   mutex_lock lock(registry.mutex_);
+  ops.reserve(registry.ops_.size());
   for (const auto& pair : registry.ops_) {
     ops.push_back(pair.first);
   }
@@ -341,18 +415,75 @@ std::vector<const KernelDef*> XlaOpRegistry::DeviceKernels(
   return ops;
 }
 
-/* static */ const std::unordered_set<string>*
-XlaOpRegistry::CompileTimeConstantInputs(const string& op) {
+/*static*/ const std::unordered_set<std::string>*
+XlaOpRegistry::CompileTimeConstantInputArgNames(const string& op) {
   XlaOpRegistry& registry = Instance();
   mutex_lock lock(registry.mutex_);
   auto it = registry.ops_.find(op);
+  static auto empty_set = new std::unordered_set<std::string>;
   if (it == registry.ops_.end() || it->second.empty()) {
-    return nullptr;
+    return empty_set;
+  } else {
+    return &it->second.front()->compile_time_constant_inputs;
   }
-  // The test in IsCompatible ensures that if there are multiple matching
-  // registrations for this op name, they all have the same value of
-  // compile_time_constant_inputs, so only the first match is returned.
-  return &it->second.front()->compile_time_constant_inputs;
+}
+
+/* static */ absl::Status XlaOpRegistry::CompileTimeConstantInputs(
+    const NodeDef& node_def, const OpKernel* op_kernel, const OpDef* op_def,
+    std::vector<int>* result) {
+  result->clear();
+
+  DCHECK(op_def != nullptr || op_kernel != nullptr);
+
+  std::unordered_set<string> compile_time_constant_inputs_from_attr;
+  std::vector<string> compile_time_constant_inputs_vect_from_attr;
+
+  const std::unordered_set<string>* compile_time_constant_inputs;
+
+  if (TryGetNodeAttr(node_def, kXlaCompileTimeConstantInputsAttr,
+                     &compile_time_constant_inputs_vect_from_attr)) {
+    absl::c_copy(compile_time_constant_inputs_vect_from_attr,
+                 std::inserter(compile_time_constant_inputs_from_attr,
+                               compile_time_constant_inputs_from_attr.end()));
+    compile_time_constant_inputs = &compile_time_constant_inputs_from_attr;
+  } else {
+    compile_time_constant_inputs =
+        CompileTimeConstantInputArgNames(node_def.op());
+    if (compile_time_constant_inputs->empty()) {
+      return absl::OkStatus();
+    }
+  }
+
+  VLOG(3) << "For operation "
+          << (op_def != nullptr ? op_def->name() : op_kernel->name())
+          << " required constants are: "
+          << absl::StrJoin(*compile_time_constant_inputs, ", ");
+
+  for (const string& input : *compile_time_constant_inputs) {
+    if (op_def) {
+      NameRangeMap input_name_ranges;
+      TF_RETURN_IF_ERROR(
+          NameRangesForNode(node_def, *op_def, &input_name_ranges, nullptr));
+      auto name_range = input_name_ranges.find(input);
+      if (name_range == input_name_ranges.end()) {
+        continue;
+      }
+
+      for (int i = name_range->second.first; i < name_range->second.second;
+           i++) {
+        result->push_back(i);
+      }
+    } else {
+      int start, stop;
+      TF_CHECK_OK(op_kernel->InputRange(input, &start, &stop));
+      for (int i = start; i < stop; ++i) {
+        result->push_back(i);
+      }
+    }
+  }
+
+  absl::c_sort(*result);
+  return absl::OkStatus();
 }
 
 /*static*/ bool XlaOpRegistry::IsMetadataOp(const string& op) {
@@ -373,6 +504,7 @@ std::vector<string> XlaOpRegistry::BackendNames() {
   std::vector<string> names;
   XlaOpRegistry& registry = Instance();
   mutex_lock lock(registry.mutex_);
+  names.reserve(registry.backends_.size());
   for (const auto& backend_pair : registry.backends_) {
     names.push_back(backend_pair.first);
   }
@@ -403,17 +535,17 @@ XlaOpRegistrationBuilder XlaOpRegistrationBuilder::Name(
 
 XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::Device(
     absl::Span<const absl::string_view> devices) {
-  registration_->has_device_whitelist = true;
+  registration_->has_device_allowlist = true;
   for (absl::string_view device : devices) {
-    registration_->device_whitelist.emplace(device);
+    registration_->device_allowlist.emplace(device);
   }
   return *this;
 }
 
 XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::Device(
     absl::string_view device) {
-  registration_->has_device_whitelist = true;
-  registration_->device_whitelist.emplace(device);
+  registration_->has_device_allowlist = true;
+  registration_->device_allowlist.emplace(device);
   return *this;
 }
 
@@ -424,6 +556,16 @@ XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::CompilationOnly() {
 
 XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::AllowResourceTypes() {
   registration_->allow_resource_types = true;
+  return *this;
+}
+
+XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::AllowVariantTypes() {
+  registration_->allow_variant_types = true;
+  return *this;
+}
+
+XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::AllowStringType() {
+  registration_->allow_string_type = true;
   return *this;
 }
 
@@ -445,7 +587,7 @@ XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::TypeConstraint(
   return *this;
 }
 
-XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::CompileTimeConstInput(
+XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::CompileTimeConstantInput(
     absl::string_view input_name) {
   registration_->compile_time_constant_inputs.emplace(input_name);
   return *this;
@@ -453,6 +595,11 @@ XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::CompileTimeConstInput(
 
 XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::IsMetadataOp() {
   registration_->is_metadata_op = true;
+  return *this;
+}
+
+XlaOpRegistrationBuilder& XlaOpRegistrationBuilder::Label(std::string label) {
+  registration_->label = label;
   return *this;
 }
 
@@ -482,6 +629,8 @@ XlaBackendRegistrar::XlaBackendRegistrar(
     XlaOpRegistry::BackendOpFilter op_filter) {
   XlaOpRegistry& registry = XlaOpRegistry::Instance();
   registry.RegisterBackend(string(name), types, op_filter);
+
+  AddSymbolicExecutionDevice(name);
 }
 
 }  // namespace tensorflow

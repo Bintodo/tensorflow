@@ -14,23 +14,22 @@
 # ==============================================================================
 
 """Synchronize replicas for training."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-from tensorflow.core.framework import types_pb2
+from tensorflow.python.distribute import distribute_lib
+from tensorflow.python.framework import indexed_slices
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import data_flow_ops
 from tensorflow.python.ops import state_ops
-from tensorflow.python.ops import variable_scope
+from tensorflow.python.ops import variable_v1
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.training import optimizer
 from tensorflow.python.training import queue_runner
 from tensorflow.python.training import session_manager
 from tensorflow.python.training import session_run_hook
+from tensorflow.python.util import deprecation
 from tensorflow.python.util.tf_export import tf_export
 
 
@@ -39,9 +38,12 @@ from tensorflow.python.util.tf_export import tf_export
 # rate according to the number of replicas. This change is introduced to be
 # consistent with how gradients are aggregated (averaged) within a batch in a
 # replica.
-@tf_export("train.SyncReplicasOptimizer")
+@tf_export(v1=["train.SyncReplicasOptimizer"])
 class SyncReplicasOptimizer(optimizer.Optimizer):
   """Class to synchronize, aggregate gradients and pass them to the optimizer.
+
+  This class is deprecated. For synchronous training, please use [Distribution
+  Strategies](https://github.com/tensorflow/tensorflow/tree/master/tensorflow/contrib/distribute).
 
   In a typical asynchronous training environment, it's common to have some
   stale gradients. For example, with a N-replica asynchronous training,
@@ -105,7 +107,7 @@ class SyncReplicasOptimizer(optimizer.Optimizer):
   # Note that if you want to have 2 backup replicas, you can change
   # total_num_replicas=52 and make sure this number matches how many physical
   # replicas you started in your job.
-  opt = tf.train.SyncReplicasOptimizer(opt, replicas_to_aggregate=50,
+  opt = tf.compat.v1.train.SyncReplicasOptimizer(opt, replicas_to_aggregate=50,
                                  total_num_replicas=50)
 
   # Some models have startup_delays to help stabilize the model but when using
@@ -130,15 +132,13 @@ class SyncReplicasOptimizer(optimizer.Optimizer):
     while not mon_sess.should_stop():
       mon_sess.run(training_op)
   ```
-
-  To use SyncReplicasOptimizer with an `Estimator`, you need to send
-  sync_replicas_hook while calling the fit.
-  ```python
-  my_estimator = DNNClassifier(..., optimizer=opt)
-  my_estimator.fit(..., hooks=[sync_replicas_hook])
-  ```
   """
 
+  @deprecation.deprecated(
+      None, "The `SyncReplicaOptimizer` class is deprecated. For synchronous "
+      "training, please use [Distribution Strategies](https://github.com/"
+      "tensorflow/tensorflow/tree/master/tensorflow/contrib/distribute).",
+      warn_once=True)
   def __init__(self,
                opt,
                replicas_to_aggregate,
@@ -249,8 +249,9 @@ class SyncReplicasOptimizer(optimizer.Optimizer):
     # local_anchor op will be placed on this worker task by default.
     local_anchor = control_flow_ops.no_op()
     # Colocating local_step variable prevents it being placed on the PS.
-    with ops.colocate_with(local_anchor):
-      self._local_step = variable_scope.variable(
+    distribution_strategy = distribute_lib.get_strategy()
+    with distribution_strategy.extended.colocate_vars_with(local_anchor):
+      self._local_step = variable_v1.VariableV1(
           initial_value=0,
           trainable=False,
           collections=[ops.GraphKeys.LOCAL_VARIABLES],
@@ -270,7 +271,7 @@ class SyncReplicasOptimizer(optimizer.Optimizer):
           if grad is None:
             aggregated_grad.append(None)  # pass-through.
             continue
-          elif isinstance(grad, ops.Tensor):
+          elif isinstance(grad, tensor.Tensor):
             grad_accum = data_flow_ops.ConditionalAccumulator(
                 grad.dtype,
                 shape=var.get_shape(),
@@ -280,7 +281,7 @@ class SyncReplicasOptimizer(optimizer.Optimizer):
             aggregated_grad.append(grad_accum.take_grad(
                 self._replicas_to_aggregate))
           else:
-            if not isinstance(grad, ops.IndexedSlices):
+            if not isinstance(grad, indexed_slices.IndexedSlices):
               raise ValueError("Unknown grad type!")
             grad_accum = data_flow_ops.SparseConditionalAccumulator(
                 grad.dtype, shape=(), shared_name=var.name + "/grad_accum")
@@ -308,16 +309,6 @@ class SyncReplicasOptimizer(optimizer.Optimizer):
                                     shared_name="sync_token_q"))
         self._sync_token_queue = sync_token_queue
 
-        # dummy_queue is passed to the queue runner. Don't use the real queues
-        # because the queue runner doesn't automatically reopen it once it
-        # closed queues in PS devices.
-        dummy_queue = (
-            data_flow_ops.FIFOQueue(1,
-                                    types_pb2.DT_INT32,
-                                    shapes=(),
-                                    name="dummy_queue",
-                                    shared_name="dummy_queue"))
-
       with ops.device(global_step.device), ops.name_scope(""):
         # Replicas have to wait until they can get a token from the token queue.
         with ops.control_dependencies(train_ops):
@@ -335,8 +326,8 @@ class SyncReplicasOptimizer(optimizer.Optimizer):
             sync_op = self._variable_averages.apply(
                 self._variables_to_average)
 
-        self._chief_queue_runner = queue_runner.QueueRunner(dummy_queue,
-                                                            [sync_op])
+        self._chief_queue_runner = queue_runner.QueueRunner(
+            sync_token_queue, [sync_op])
       for accum, dev in self._accumulator_list:
         with ops.device(dev):
           chief_init_ops.append(

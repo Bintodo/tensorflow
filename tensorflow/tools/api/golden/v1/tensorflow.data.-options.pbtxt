@@ -1,49 +1,62 @@
 path: "tensorflow.data.Options"
 tf_class {
-  is_instance: "<class \'tensorflow.python.data.ops.dataset_ops.Options\'>"
+  is_instance: "<class \'tensorflow.python.data.ops.options.Options\'>"
+  is_instance: "<class \'tensorflow.python.data.util.options.OptionsBase\'>"
   is_instance: "<type \'object\'>"
   member {
-    name: "experimental_autotune"
+    name: "autotune"
     mtype: "<type \'property\'>"
   }
   member {
-    name: "experimental_filter_fusion"
+    name: "dataset_name"
     mtype: "<type \'property\'>"
   }
   member {
-    name: "experimental_hoist_random_uniform"
+    name: "deterministic"
     mtype: "<type \'property\'>"
   }
   member {
-    name: "experimental_latency_all_edges"
+    name: "experimental_deterministic"
     mtype: "<type \'property\'>"
   }
   member {
-    name: "experimental_map_and_batch_fusion"
+    name: "experimental_distribute"
     mtype: "<type \'property\'>"
   }
   member {
-    name: "experimental_map_and_filter_fusion"
+    name: "experimental_external_state_policy"
     mtype: "<type \'property\'>"
   }
   member {
-    name: "experimental_map_fusion"
+    name: "experimental_optimization"
     mtype: "<type \'property\'>"
   }
   member {
-    name: "experimental_map_parallelization"
+    name: "experimental_service"
     mtype: "<type \'property\'>"
   }
   member {
-    name: "experimental_map_vectorization"
+    name: "experimental_slack"
     mtype: "<type \'property\'>"
   }
   member {
-    name: "experimental_noop_elimination"
+    name: "experimental_symbolic_checkpoint"
     mtype: "<type \'property\'>"
   }
   member {
-    name: "experimental_shuffle_and_repeat_fusion"
+    name: "experimental_threading"
+    mtype: "<type \'property\'>"
+  }
+  member {
+    name: "experimental_warm_start"
+    mtype: "<type \'property\'>"
+  }
+  member {
+    name: "framework_type"
+    mtype: "<type \'property\'>"
+  }
+  member {
+    name: "threading"
     mtype: "<type \'property\'>"
   }
   member_method {

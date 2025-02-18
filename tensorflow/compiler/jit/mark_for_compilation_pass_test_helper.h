@@ -16,24 +16,69 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_JIT_MARK_FOR_COMPILATION_PASS_TEST_HELPER_H_
 #define TENSORFLOW_COMPILER_JIT_MARK_FOR_COMPILATION_PASS_TEST_HELPER_H_
 
+#include <memory>
+#include <string>
+#include <utility>
+
 #include "tensorflow/compiler/jit/mark_for_compilation_pass.h"
 
 namespace tensorflow {
 class MarkForCompilationPassTestHelper {
  public:
+  struct Options {
+    bool enable_global_jit;
+    bool disable_deadness_analysis;
+    bool enable_cluster_scoping;
+    bool deterministic_cluster_names;
+    std::string session_name;  // ConfigProto.Experimental.SessionMetadata.name
+
+    Options()
+        : enable_global_jit(true),
+          disable_deadness_analysis(true),
+          enable_cluster_scoping(true),
+          deterministic_cluster_names(false) {}
+
+    Options WithNoGlobalJit() {
+      Options copy = *this;
+      copy.enable_global_jit = false;
+      return copy;
+    }
+
+    Options WithDeadnessAnalysis() {
+      Options copy = *this;
+      copy.disable_deadness_analysis = false;
+      return copy;
+    }
+
+    Options WithNoClusterScoping() {
+      Options copy = *this;
+      copy.enable_cluster_scoping = false;
+      return copy;
+    }
+
+    Options WithDeterministicClusterNames() {
+      Options copy = *this;
+      copy.deterministic_cluster_names = true;
+      return copy;
+    }
+
+    Options WithSessionName(std::string name) {
+      Options copy = *this;
+      copy.session_name = std::move(name);
+      return copy;
+    }
+  };
+
   // Runs the MarkForCompilation pass on `graph` after assigning all nodes in
   // `graph` to the CPU device.  To make testing easier, ignores device
-  // registration, _XlaCompile attributes, input deadness and global jit level.
-  static Status MarkForCompilation(std::unique_ptr<Graph>* graph,
-                                   FunctionLibraryDefinition* flib_def,
-                                   SessionOptions* session_options);
-
-  // Like `MarkForCompilation` but creates a default SessionOptions.
-  static Status MarkForCompilation(std::unique_ptr<Graph>* graph,
-                                   FunctionLibraryDefinition* flib_def);
+  // registration and  _XlaCompile attributes.
+  static absl::Status MarkForCompilation(std::unique_ptr<Graph>* graph,
+                                         FunctionLibraryDefinition* flib_def,
+                                         Options options = Options());
 
   // Like `MarkForCompilation` but creates `flib_def` from the op registry.
-  static Status MarkForCompilation(std::unique_ptr<Graph>* graph);
+  static absl::Status MarkForCompilation(std::unique_ptr<Graph>* graph,
+                                         Options options = Options());
 };
 }  // namespace tensorflow
 

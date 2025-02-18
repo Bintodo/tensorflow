@@ -13,17 +13,26 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/java/src/gen/cc/op_specs.h"
+
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/strings/match.h"
+#include "absl/strings/str_join.h"
+#include "absl/strings/strip.h"
 #include "re2/re2.h"
-#include "tensorflow/core/framework/op.h"
+#include "tensorflow/core/framework/api_def.pb.h"
+#include "tensorflow/core/framework/attr_value.pb.h"
+#include "tensorflow/core/framework/op_def.pb.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/java/src/gen/cc/op_specs.h"
+#include "tensorflow/core/platform/stringpiece.h"
+#include "tensorflow/java/src/gen/cc/java_defs.h"
 
 namespace tensorflow {
 namespace java {
@@ -91,11 +100,6 @@ class TypeResolver {
 
 Type TypeResolver::TypeOf(const OpDef_ArgDef& arg_def, bool* iterable_out) {
   *iterable_out = false;
-  if (!arg_def.number_attr().empty()) {
-    // when number_attr is set, argument has to be a list of tensors
-    *iterable_out = true;
-    visited_attrs_.insert(std::make_pair(arg_def.number_attr(), Type::Int()));
-  }
   Type type = Type::Wildcard();
   if (arg_def.type() != DataType::DT_INVALID) {
     type = Type::ForDataType(arg_def.type());
@@ -122,6 +126,11 @@ Type TypeResolver::TypeOf(const OpDef_ArgDef& arg_def, bool* iterable_out) {
     LOG(FATAL) << "Cannot resolve data type of argument \"" << arg_def.name()
                << "\" in operation \"" << op_def_.name() << "\"";
   }
+  if (!arg_def.number_attr().empty()) {
+    // when number_attr is set, argument has to be a list of tensors
+    *iterable_out = true;
+    visited_attrs_.insert(std::make_pair(arg_def.number_attr(), Type::Int()));
+  }
   return type;
 }
 
@@ -130,7 +139,7 @@ std::pair<Type, Type> TypeResolver::TypesOf(const OpDef_AttrDef& attr_def,
   std::pair<Type, Type> types = MakeTypePair(Type::Wildcard());
   *iterable_out = false;
   StringPiece attr_type = attr_def.type();
-  if (str_util::ConsumePrefix(&attr_type, "list(")) {
+  if (absl::ConsumePrefix(&attr_type, "list(")) {
     attr_type.remove_suffix(1);  // remove closing brace
     *iterable_out = true;
   }
@@ -208,7 +217,7 @@ string ParseDocumentation(const string& inp) {
   markups_subexpr.push_back("`+");           // inlined code and code blocks
   markups_subexpr.push_back("\\*{1,2}\\b");  // text emphasis
   markups_subexpr.push_back("\\[");          // hyperlinks
-  const RE2 markup_expr("(" + str_util::Join(markups_subexpr, "|") + ")");
+  const RE2 markup_expr("(" + absl::StrJoin(markups_subexpr, "|") + ")");
 
   bool in_list = false;
   string input = inp;
@@ -219,9 +228,9 @@ string ParseDocumentation(const string& inp) {
       break;  // end of loop
     }
     javadoc_text << text;
-    if (str_util::StartsWith(markup, "\n")) {
+    if (absl::StartsWith(markup, "\n")) {
       javadoc_text << "\n";
-      if (str_util::StrContains(markup, "*")) {
+      if (absl::StrContains(markup, "*")) {
         // new list item
         javadoc_text << (in_list ? "</li>\n" : "<ul>\n") << "<li>\n";
         in_list = true;
@@ -229,18 +238,18 @@ string ParseDocumentation(const string& inp) {
         // end of list
         javadoc_text << "</li>\n</ul>\n";
         in_list = false;
-      } else if (!str_util::StartsWith(input, "```")) {
+      } else if (!absl::StartsWith(input, "```")) {
         // new paragraph (not required if a <pre> block follows)
         javadoc_text << "<p>\n";
       }
-    } else if (str_util::StartsWith(markup, "```")) {
+    } else if (absl::StartsWith(markup, "```")) {
       // code blocks
       if (FindAndCut(&input, "(```\\s*\n*)", &text)) {
         javadoc_text << "<pre>{@code\n" << text << "}</pre>\n";
       } else {
         javadoc_text << markup;
       }
-    } else if (str_util::StartsWith("(" + markup + ")", "`")) {
+    } else if (absl::StartsWith("(" + markup + ")", "`")) {
       // inlined code
       if (FindAndCut(&input, markup, &text)) {
         javadoc_text << "{@code " << text << "}";
@@ -261,13 +270,13 @@ string ParseDocumentation(const string& inp) {
       } else {
         javadoc_text << markup;
       }
-    } else if (str_util::StartsWith(markup, "[")) {
+    } else if (absl::StartsWith(markup, "[")) {
       // hyperlinks
       string label;
       string link;
       if (RE2::PartialMatch(input, "([^\\[]+)\\]\\((http.+)\\)", &label,
                             &link) &&
-          str_util::StartsWith(input, label + link)) {
+          absl::StartsWith(input, label + link)) {
         input = input.substr(label.size() + link.size());
         javadoc_text << "<a href=\"" << link << "\">"
                      << ParseDocumentation(label) << "</a>";

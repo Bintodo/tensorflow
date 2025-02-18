@@ -13,11 +13,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstdint>
+
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/core/framework/kernel_def_builder.h"
+#include "xla/hlo/builder/padding.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 namespace {
@@ -49,16 +55,14 @@ class LRNOp : public XlaOpKernel {
     // We use a window of depth_radius_ * 2 + 1, to account for the current
     // element and a depth_radius_ on either side.
     auto accumulation_type = XlaHelpers::SumAccumulationType(input_type(0));
-    auto converted =
-        XlaHelpers::ConvertElementType(builder, input, accumulation_type);
+    auto converted = XlaHelpers::ConvertElementType(input, accumulation_type);
     auto squared = xla::Mul(converted, converted);
     auto reduce = xla::ReduceWindow(
         squared, XlaHelpers::Zero(builder, accumulation_type),
         *ctx->GetOrCreateAdd(accumulation_type),
         /* window_dimensions = */ {1, 1, 1, depth_radius_ * 2 + 1},
         /* window_strides = */ {1, 1, 1, 1}, xla::Padding::kSame);
-    auto sqr_sum =
-        XlaHelpers::ConvertElementType(builder, reduce, input_type(0));
+    auto sqr_sum = XlaHelpers::ConvertElementType(reduce, input_type(0));
 
     auto scale = xla::Pow(
         xla::Add(xla::ConstantR0<float>(builder, bias_),
@@ -69,7 +73,7 @@ class LRNOp : public XlaOpKernel {
   }
 
  private:
-  int64 depth_radius_;
+  int64_t depth_radius_;
   float bias_;
   float alpha_;
   float beta_;
@@ -95,10 +99,10 @@ class LRNGradOp : public XlaOpKernel {
 
     OP_REQUIRES(ctx, in_grads_shape.dims() == 4 && in_image_shape.dims() == 4,
                 errors::InvalidArgument("inputs must be 4-dimensional"));
-    const int64 batch = in_grads_shape.dim_size(0);
-    const int64 rows = in_grads_shape.dim_size(1);
-    const int64 cols = in_grads_shape.dim_size(2);
-    const int64 depth = in_grads_shape.dim_size(3);
+    const int64_t batch = in_grads_shape.dim_size(0);
+    const int64_t rows = in_grads_shape.dim_size(1);
+    const int64_t cols = in_grads_shape.dim_size(2);
+    const int64_t depth = in_grads_shape.dim_size(3);
     OP_REQUIRES(
         ctx, in_image_shape.dim_size(0) == batch &&
                  in_image_shape.dim_size(1) == rows &&
@@ -138,15 +142,14 @@ class LRNGradOp : public XlaOpKernel {
 
     auto accumulation_type = XlaHelpers::SumAccumulationType(input_type(0));
     auto converted =
-        XlaHelpers::ConvertElementType(builder, in_image, accumulation_type);
+        XlaHelpers::ConvertElementType(in_image, accumulation_type);
     auto squared = xla::Mul(converted, converted);
     auto reduce = xla::ReduceWindow(
         squared, XlaHelpers::Zero(builder, accumulation_type),
         *ctx->GetOrCreateAdd(accumulation_type),
         /* window_dimensions = */ {1, 1, 1, depth_radius_ * 2 + 1},
         /* window_strides = */ {1, 1, 1, 1}, xla::Padding::kSame);
-    auto sqr_sum =
-        XlaHelpers::ConvertElementType(builder, reduce, input_type(0));
+    auto sqr_sum = XlaHelpers::ConvertElementType(reduce, input_type(0));
 
     auto norm =
         xla::Add(xla::ConstantR0<float>(builder, bias_),
@@ -157,15 +160,13 @@ class LRNGradOp : public XlaOpKernel {
                  xla::Div(out_image, norm)),
         in_grads);
 
-    auto converted_dy =
-        XlaHelpers::ConvertElementType(builder, dy, accumulation_type);
+    auto converted_dy = XlaHelpers::ConvertElementType(dy, accumulation_type);
     auto dy_reduce = xla::ReduceWindow(
         converted_dy, XlaHelpers::Zero(builder, accumulation_type),
         *ctx->GetOrCreateAdd(accumulation_type),
         /* window_dimensions = */ {1, 1, 1, depth_radius_ * 2 + 1},
         /* window_strides = */ {1, 1, 1, 1}, xla::Padding::kSame);
-    auto dy_reduced =
-        XlaHelpers::ConvertElementType(builder, dy_reduce, input_type(0));
+    auto dy_reduced = XlaHelpers::ConvertElementType(dy_reduce, input_type(0));
 
     xla::XlaOp gradients = xla::Add(
         xla::Mul(in_image, dy_reduced),
@@ -176,7 +177,7 @@ class LRNGradOp : public XlaOpKernel {
   }
 
  private:
-  int64 depth_radius_;
+  int64_t depth_radius_;
   float bias_;
   float alpha_;
   float beta_;

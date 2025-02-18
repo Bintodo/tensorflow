@@ -16,14 +16,13 @@ limitations under the License.
 #define TENSORFLOW_CORE_KERNELS_STRING_UTIL_H_
 
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/lib/core/stringpiece.h"
 
 namespace tensorflow {
 
 // Enumeration for unicode encodings.  Used by ops such as
 // tf.strings.unicode_encode and tf.strings.unicode_decode.
-// TODO(edloper): Add support for:
-// UTF16, UTF32, UTF16BE, UTF32BE, UTF16LE, UTF32LE
-enum class UnicodeEncoding { UTF8 };
+enum class UnicodeEncoding { UTF8, UTF16BE, UTF32BE };
 
 // Enumeration for character units.  Used by string such as
 // tf.strings.length and tf.substr.
@@ -34,14 +33,14 @@ enum class CharUnit { BYTE, UTF8_CHAR };
 inline bool IsTrailByte(char x) { return static_cast<signed char>(x) < -0x40; }
 
 // Sets `encoding` based on `str`.
-Status ParseUnicodeEncoding(const string& str, UnicodeEncoding* encoding);
+absl::Status ParseUnicodeEncoding(const string& str, UnicodeEncoding* encoding);
 
 // Sets `unit` value based on `str`.
-Status ParseCharUnit(const string& str, CharUnit* unit);
+absl::Status ParseCharUnit(const string& str, CharUnit* unit);
 
 // Returns the number of Unicode characters in a UTF-8 string.
 // Result may be incorrect if the input string is not valid UTF-8.
-int32 UTF8StrLen(const string& string);
+int32 UTF8StrLen(const string& str);
 
 // Get the next UTF8 character position starting at the given position and
 // skipping the given number of characters. Position is a byte offset, and
@@ -49,7 +48,7 @@ int32 UTF8StrLen(const string& string);
 // the end of the string is reached before the requested characters, then the
 // position will point to the end of string and this function will return false.
 template <typename T>
-bool ForwardNUTF8CharPositions(const StringPiece in,
+bool ForwardNUTF8CharPositions(const absl::string_view in,
                                const T num_utf8_chars_to_shift, T* pos) {
   const size_t size = in.size();
   T utf8_chars_counted = 0;
@@ -57,7 +56,7 @@ bool ForwardNUTF8CharPositions(const StringPiece in,
     // move forward one utf-8 character
     do {
       ++*pos;
-    } while (IsTrailByte(in[*pos]) && *pos < size);
+    } while (*pos < size && IsTrailByte(in[*pos]));
     ++utf8_chars_counted;
   }
   return utf8_chars_counted == num_utf8_chars_to_shift;
@@ -70,7 +69,7 @@ bool ForwardNUTF8CharPositions(const StringPiece in,
 // the string is reached before the requested character, then the position will
 // point to the beginning of the string and this function will return false.
 template <typename T>
-bool BackNUTF8CharPositions(const StringPiece in,
+bool BackNUTF8CharPositions(const absl::string_view in,
                             const T num_utf8_chars_to_shift, T* pos) {
   const size_t start = 0;
   T utf8_chars_counted = 0;

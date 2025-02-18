@@ -13,15 +13,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <cstdlib>
-#include <unordered_set>
-
 #include "tensorflow/core/debug/debug_io_utils.h"
+
+#include <cstdlib>
+#include <memory>
+#include <unordered_set>
 
 #include "tensorflow/core/debug/debug_callback_registry.h"
 #include "tensorflow/core/debug/debug_node_key.h"
 #include "tensorflow/core/debug/debugger_event_metadata.pb.h"
 #include "tensorflow/core/framework/summary.pb.h"
+#include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
@@ -39,15 +41,15 @@ class DebugIOUtilsTest : public ::testing::Test {
   void Initialize() {
     env_ = Env::Default();
 
-    tensor_a_.reset(new Tensor(DT_FLOAT, TensorShape({2, 2})));
+    tensor_a_ = std::make_unique<Tensor>(DT_FLOAT, TensorShape({2, 2}));
     tensor_a_->flat<float>()(0) = 5.0;
     tensor_a_->flat<float>()(1) = 3.0;
     tensor_a_->flat<float>()(2) = -1.0;
     tensor_a_->flat<float>()(3) = 0.0;
 
     tensor_b_.reset(new Tensor(DT_STRING, TensorShape{2}));
-    tensor_b_->flat<string>()(0) = "corge";
-    tensor_b_->flat<string>()(1) = "garply";
+    tensor_b_->flat<tstring>()(0) = "corge";
+    tensor_b_->flat<tstring>()(1) = "garply";
   }
 
   Env* env_;
@@ -104,7 +106,11 @@ TEST_F(DebugIOUtilsTest, DebugNodeKeysIsHashable) {
 TEST_F(DebugIOUtilsTest, DumpFloatTensorToFileSunnyDay) {
   Initialize();
 
-  const string test_dir = testing::TmpDir();
+  const string test_dir =
+      strings::StrCat(testing::TmpDir(), "/DumpFloatTensorToFileSunnyDay");
+  if (!env_->FileExists(test_dir).ok()) {
+    ASSERT_TRUE(env_->RecursivelyCreateDir(test_dir).ok());
+  }
 
   // Append levels of nonexisting directories, to test that the function can
   // create directories.
@@ -135,8 +141,8 @@ TEST_F(DebugIOUtilsTest, DumpFloatTensorToFileSunnyDay) {
   }
 
   // Tear down temporary file and directories.
-  int64 undeleted_files = 0;
-  int64 undeleted_dirs = 0;
+  int64_t undeleted_files = 0;
+  int64_t undeleted_dirs = 0;
   ASSERT_TRUE(
       env_->DeleteRecursively(test_dir, &undeleted_files, &undeleted_dirs)
           .ok());
@@ -147,15 +153,18 @@ TEST_F(DebugIOUtilsTest, DumpFloatTensorToFileSunnyDay) {
 TEST_F(DebugIOUtilsTest, DumpStringTensorToFileSunnyDay) {
   Initialize();
 
-  const string test_dir = testing::TmpDir();
-
+  const string test_dir =
+      strings::StrCat(testing::TmpDir(), "/DumpStringTensorToFileSunnyDay");
+  if (!env_->FileExists(test_dir).ok()) {
+    ASSERT_TRUE(env_->RecursivelyCreateDir(test_dir).ok());
+  }
   const DebugNodeKey kDebugNodeKey("/job:localhost/replica:0/task:0/cpu:0",
                                    "quux/grault/tensor_b", 1, "DebugIdentity");
   const uint64 wall_time = env_->NowMicros();
 
   string dump_file_name;
-  Status s = DebugFileIO::DumpTensorToDir(kDebugNodeKey, *tensor_b_, wall_time,
-                                          test_dir, &dump_file_name);
+  absl::Status s = DebugFileIO::DumpTensorToDir(
+      kDebugNodeKey, *tensor_b_, wall_time, test_dir, &dump_file_name);
   ASSERT_TRUE(s.ok());
 
   // Read the file into a Event proto.
@@ -181,13 +190,13 @@ TEST_F(DebugIOUtilsTest, DumpStringTensorToFileSunnyDay) {
 
   // Verify tensor shape and value.
   ASSERT_EQ(tensor_b_->shape(), b_prime.shape());
-  for (int i = 0; i < b_prime.flat<string>().size(); ++i) {
-    ASSERT_EQ(tensor_b_->flat<string>()(i), b_prime.flat<string>()(i));
+  for (int i = 0; i < b_prime.flat<tstring>().size(); ++i) {
+    ASSERT_EQ(tensor_b_->flat<tstring>()(i), b_prime.flat<tstring>()(i));
   }
 
   // Tear down temporary file and directories.
-  int64 undeleted_files = 0;
-  int64 undeleted_dirs = 0;
+  int64_t undeleted_files = 0;
+  int64_t undeleted_dirs = 0;
   ASSERT_TRUE(
       env_->DeleteRecursively(test_dir, &undeleted_files, &undeleted_dirs)
           .ok());
@@ -199,7 +208,11 @@ TEST_F(DebugIOUtilsTest, DumpTensorToFileCannotCreateDirectory) {
   Initialize();
 
   // First, create the file at the path.
-  const string test_dir = testing::TmpDir();
+  const string test_dir = strings::StrCat(
+      testing::TmpDir(), "/DumpTensorToFileCannotCreateDirectory");
+  if (!env_->FileExists(test_dir).ok()) {
+    ASSERT_TRUE(env_->RecursivelyCreateDir(test_dir).ok());
+  }
   const string kDeviceName = "/job:localhost/replica:0/task:0/cpu:0";
   const DebugNodeKey kDebugNodeKey(kDeviceName, "baz/tensor_a", 0,
                                    "DebugIdentity");
@@ -227,13 +240,13 @@ TEST_F(DebugIOUtilsTest, DumpTensorToFileCannotCreateDirectory) {
   const uint64 wall_time = env_->NowMicros();
 
   string dump_file_name;
-  Status s = DebugFileIO::DumpTensorToDir(kDebugNodeKey, *tensor_a_, wall_time,
-                                          test_dir, &dump_file_name);
+  absl::Status s = DebugFileIO::DumpTensorToDir(
+      kDebugNodeKey, *tensor_a_, wall_time, test_dir, &dump_file_name);
   ASSERT_FALSE(s.ok());
 
   // Tear down temporary file and directories.
-  int64 undeleted_files = 0;
-  int64 undeleted_dirs = 0;
+  int64_t undeleted_files = 0;
+  int64_t undeleted_dirs = 0;
   ASSERT_TRUE(
       env_->DeleteRecursively(test_dir, &undeleted_files, &undeleted_dirs)
           .ok());
@@ -253,7 +266,8 @@ TEST_F(DebugIOUtilsTest, PublishTensorToMultipleFileURLs) {
   std::vector<string> dump_file_paths;
   std::vector<string> urls;
   for (int i = 0; i < kNumDumpRoots; ++i) {
-    string dump_root = strings::StrCat(testing::TmpDir(), "/", i);
+    string dump_root = strings::StrCat(testing::TmpDir(),
+                                       "/PublicTensorToMultipleFileUrls_", i);
 
     dump_roots.push_back(dump_root);
     dump_file_paths.push_back(
@@ -265,7 +279,7 @@ TEST_F(DebugIOUtilsTest, PublishTensorToMultipleFileURLs) {
     ASSERT_NE(dump_roots[0], dump_roots[i]);
   }
 
-  Status s =
+  absl::Status s =
       DebugIO::PublishDebugTensor(kDebugNodeKey, *tensor_a_, wall_time, urls);
   ASSERT_TRUE(s.ok());
 
@@ -301,8 +315,8 @@ TEST_F(DebugIOUtilsTest, PublishTensorToMultipleFileURLs) {
 
   // Tear down temporary file and directories.
   for (int i = 0; i < kNumDumpRoots; ++i) {
-    int64 undeleted_files = 0;
-    int64 undeleted_dirs = 0;
+    int64_t undeleted_files = 0;
+    int64_t undeleted_dirs = 0;
     ASSERT_TRUE(env_->DeleteRecursively(dump_roots[i], &undeleted_files,
                                         &undeleted_dirs)
                     .ok());
@@ -335,7 +349,7 @@ TEST_F(DebugIOUtilsTest, PublishTensorToMemoryCallback) {
         }
       });
 
-  Status s =
+  absl::Status s =
       DebugIO::PublishDebugTensor(kDebugNodeKey, *tensor_a_, wall_time, urls);
   ASSERT_TRUE(s.ok());
   ASSERT_TRUE(called);
@@ -353,14 +367,19 @@ TEST_F(DebugIOUtilsTest, PublishTensorConcurrentlyToPartiallyOverlappingPaths) {
   thread::ThreadPool* tp =
       new thread::ThreadPool(Env::Default(), "test", kConcurrentPubs);
   const uint64 wall_time = env_->NowMicros();
-  const string dump_root_base = testing::TmpDir();
+  const string dump_root_base =
+      strings::StrCat(testing::TmpDir(),
+                      "/PublishTensorConcurrentlyToPartiallyOverlappingPaths");
+  if (!env_->FileExists(dump_root_base).ok()) {
+    ASSERT_TRUE(env_->RecursivelyCreateDir(dump_root_base).ok());
+  }
 
   mutex mu;
-  std::vector<string> dump_roots GUARDED_BY(mu);
-  std::vector<string> dump_file_paths GUARDED_BY(mu);
+  std::vector<string> dump_roots TF_GUARDED_BY(mu);
+  std::vector<string> dump_file_paths TF_GUARDED_BY(mu);
 
-  int dump_count GUARDED_BY(mu) = 0;
-  int done_count GUARDED_BY(mu) = 0;
+  int dump_count TF_GUARDED_BY(mu) = 0;
+  int done_count TF_GUARDED_BY(mu) = 0;
   Notification all_done;
 
   auto fn = [this, &dump_count, &done_count, &mu, &dump_root_base, &dump_roots,
@@ -384,7 +403,7 @@ TEST_F(DebugIOUtilsTest, PublishTensorConcurrentlyToPartiallyOverlappingPaths) {
     std::vector<string> urls;
     urls.push_back(debug_url);
 
-    Status s =
+    absl::Status s =
         DebugIO::PublishDebugTensor(kDebugNodeKey, *tensor_a_, wall_time, urls);
     ASSERT_TRUE(s.ok());
 
@@ -445,11 +464,12 @@ TEST_F(DebugIOUtilsTest, PublishTensorConcurrentlyToPartiallyOverlappingPaths) {
     }
 
     // Tear down temporary file and directories.
-    int64 undeleted_files = 0;
-    int64 undeleted_dirs = 0;
-    ASSERT_TRUE(env_->DeleteRecursively(dump_root_base, &undeleted_files,
-                                        &undeleted_dirs)
-                    .ok());
+    int64_t undeleted_files = 0;
+    int64_t undeleted_dirs = 0;
+    auto delete_files = env_->DeleteRecursively(
+        dump_root_base, &undeleted_files, &undeleted_dirs);
+
+    ASSERT_TRUE(delete_files.ok()) << delete_files;
     ASSERT_EQ(0, undeleted_files);
     ASSERT_EQ(0, undeleted_dirs);
   }
@@ -460,7 +480,7 @@ class DiskUsageLimitTest : public ::testing::Test {
   void Initialize() {
     setenv("TFDBG_DISK_BYTES_LIMIT", "", 1);
     DebugFileIO::resetDiskByteUsage();
-    DebugFileIO::globalDiskBytesLimit = 0;
+    DebugFileIO::global_disk_bytes_limit_ = 0;
   }
 };
 

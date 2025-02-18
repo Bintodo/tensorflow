@@ -1,10 +1,11 @@
 op {
   graph_op_name: "BoostedTreesBucketize"
+  deprecation_message: "Boosted Trees kernels in TF are deprecated. Please use TensorFlow Decision Forests instead (https://github.com/tensorflow/decision-forests)"
   visibility: HIDDEN
   in_arg {
     name: "float_values"
     description: <<END
-float; List of Rank 2 Tensor each containing float values for a single feature.
+float; List of Rank 1 Tensor each containing float values for a single feature.
 END
   }
   in_arg {
@@ -17,7 +18,7 @@ END
   out_arg {
     name: "buckets"
     description: <<END
-int; List of Rank 2 Tensors each containing the bucketized values for a single feature.
+int; List of Rank 1 Tensors each containing the bucketized values for a single feature.
 END
   }
   attr {

@@ -25,6 +25,15 @@ namespace tensorflow {
 
 // Control flow info for a graph node.
 struct ControlFlowInfo {
+  // 'frame' and 'parent_frame' are pointers to:
+  //
+  // a) One of the Enter nodes corresponding to the loop body, if the node
+  //    executes inside a loop. If multiple tensors enter the while loop, it's
+  //    undefined which Enter node will be used.
+  //
+  // b) SOURCE node (node.id() == Graph::kSourceId), if the node is not inside
+  //    any of the while loops.
+
   const Node* frame = nullptr;         // frame of a node
   const Node* parent_frame = nullptr;  // parent frame of a node
   string frame_name;                   // frame name of a node
@@ -43,8 +52,9 @@ struct ControlFlowInfo {
 // NOTE(yuanbyu): For now, we require all sends/recvs have iteration level 0.
 // This essentially means there can't be multiple serial Nexts in an iteration,
 // which all sane front-ends should satisfy.
-Status BuildControlFlowInfo(const Graph* g, std::vector<ControlFlowInfo>* info,
-                            std::vector<string>* unreachable_nodes = nullptr);
+absl::Status BuildControlFlowInfo(
+    const Graph* g, std::vector<ControlFlowInfo>* info,
+    std::vector<string>* unreachable_nodes = nullptr);
 
 }  // namespace tensorflow
 

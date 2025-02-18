@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for tensorflow.ops.reverse_sequence_op."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.compiler.tests import xla_test
@@ -35,7 +31,7 @@ class ReverseSequenceTest(xla_test.XLATestCase):
                            seq_lengths,
                            truth,
                            expected_err_re=None):
-    with self.cached_session():
+    with self.session():
       p = array_ops.placeholder(dtypes.as_dtype(x.dtype))
       lengths = array_ops.placeholder(dtypes.as_dtype(seq_lengths.dtype))
       with self.test_scope():

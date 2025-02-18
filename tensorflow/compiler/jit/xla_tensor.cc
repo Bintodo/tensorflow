@@ -14,7 +14,9 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/compiler/jit/xla_tensor.h"
+
 #include "tensorflow/compiler/tf2xla/shape_util.h"
+#include "xla/shape_util.h"
 
 namespace tensorflow {
 
@@ -25,10 +27,6 @@ namespace tensorflow {
   XlaTensor* xla_tensor =
       FromOpaquePointer(const_cast<char*>(tensor->tensor_data().data()));
   return xla_tensor;
-}
-
-/*static*/ bool XlaTensor::RefCountIsOne(const Tensor& tensor) {
-  return tensor.RefCountIsOne();
 }
 
 /*static*/ se::DeviceMemoryBase XlaTensor::DeviceMemoryFromTensor(
@@ -43,15 +41,12 @@ namespace tensorflow {
   }
 }
 
-Status XlaTensor::AllocateShapedBuffer(DataType dtype, const TensorShape& shape,
-                                       xla::LocalClient* client,
-                                       int device_ordinal) {
-  xla::Shape on_host_shape;
-  TF_RETURN_IF_ERROR(TensorShapeToXLAShape(dtype, shape, &on_host_shape));
-  xla::Shape on_device_shape =
-      client->backend().transfer_manager()->HostShapeToDeviceShape(
-          on_host_shape);
-
+absl::Status XlaTensor::AllocateShapedBuffer(DataType dtype,
+                                             const xla::Shape& on_device_shape,
+                                             xla::LocalClient* client,
+                                             int device_ordinal) {
+  xla::Shape on_host_shape =
+      xla::ShapeUtil::DeviceShapeToHostShape(on_device_shape);
   xla::ScopedShapedBuffer shaped_buffer(on_host_shape, on_device_shape,
                                         client->backend().memory_allocator(),
                                         device_ordinal);
@@ -60,23 +55,24 @@ Status XlaTensor::AllocateShapedBuffer(DataType dtype, const TensorShape& shape,
         xla::ShapeUtil::GetSubshape(on_device_shape, index_to_buffer.first);
     uint64 size =
         client->backend().transfer_manager()->GetByteSizeRequirement(subshape);
-    TF_ASSIGN_OR_RETURN(xla::OwningDeviceMemory buffer,
+    TF_ASSIGN_OR_RETURN(se::OwningDeviceMemory buffer,
                         client->backend().memory_allocator()->Allocate(
-                            device_ordinal, size, /*retry_on_failure=*/false));
+                            device_ordinal, size, /*retry_on_failure=*/false,
+                            subshape.layout().memory_space()));
     // Move our buffer into shaped_buffer, which takes ownership of it.
-    index_to_buffer.second = buffer.Forget();
+    index_to_buffer.second = buffer.Release();
   }
 
   VLOG(4) << shaped_buffer.ToString();
 
   set_shaped_buffer(std::move(shaped_buffer));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-se::Event* XlaTensor::GetDefinitionEvent(se::Stream* stream) {
+void XlaTensor::WaitForDefinitionEventOnStream(se::Stream* stream) {
   mutex_lock lock(mu_);
   if (!definition_event_) {
-    return nullptr;
+    return;
   }
 
   // The set of defined streams is expected to be very small indeed (usually
@@ -84,22 +80,27 @@ se::Event* XlaTensor::GetDefinitionEvent(se::Stream* stream) {
   if (std::find(streams_defined_on_.begin(), streams_defined_on_.end(),
                 stream) != streams_defined_on_.end()) {
     // stream is in streams_defined_on_; it doesn't need to be waited on.
-    return nullptr;
+    return;
   }
 
-  return definition_event_.get();
+  stream->WaitFor(definition_event_.get()).IgnoreError();
+  streams_defined_on_.push_back(stream);
 }
 
-void XlaTensor::SetDefinedOn(se::Stream* stream,
-                             std::shared_ptr<se::Event> event) {
+void XlaTensor::ResetDefinitionEvent(std::shared_ptr<se::Event> event,
+                                     se::Stream* stream) {
   mutex_lock lock(mu_);
   definition_event_ = std::move(event);
   streams_defined_on_ = {stream};
 }
 
-void XlaTensor::SetDefinedOn(se::Stream* stream) {
+absl::Status XlaTensor::RefreshStatusOfStreams() {
   mutex_lock lock(mu_);
-  streams_defined_on_.push_back(stream);
+  absl::Status status;
+  for (se::Stream* stream : streams_defined_on_) {
+    status.Update(stream->RefreshStatus());
+  }
+  return status;
 }
 
 // The pointer tag, OR-ed into the XlaTensor's address to distinguish it from

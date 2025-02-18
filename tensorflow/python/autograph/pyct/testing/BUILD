@@ -1,38 +1,39 @@
-licenses(["notice"])  # Apache 2.0
+load("//tensorflow:strict.default.bzl", "py_strict_library", "py_strict_test")
 
-load("//tensorflow:tensorflow.bzl", "py_test")
-
-filegroup(
-    name = "all_files",
-    srcs = glob(
-        ["**/*"],
-        exclude = [
-            "**/METADATA",
-            "**/OWNERS",
-        ],
-    ),
-    visibility = ["//tensorflow:__subpackages__"],
+package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    licenses = ["notice"],
 )
 
-py_library(
-    name = "testing",
+py_strict_library(
+    name = "codegen",
     srcs = [
         "codegen.py",
     ],
-    srcs_version = "PY2AND3",
     visibility = ["//visibility:public"],
     deps = [
-        "//tensorflow/python/autograph/pyct",
-        "//tensorflow/python/autograph/utils",
-        "@gast_archive//:gast",
+        "//tensorflow/python/autograph/pyct:templates",
+        "//third_party/py/numpy",
+        "@pypi_gast//:pkg",
     ],
 )
 
-py_test(
+py_strict_library(
+    name = "decorators",
+    srcs = ["decorators.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_strict_library(
+    name = "basic_definitions",
+    srcs = ["basic_definitions.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_strict_test(
     name = "codegen_test",
     size = "large",
     srcs = ["codegen_test.py"],
-    srcs_version = "PY2AND3",
     tags = [
         "manual",
         "no_windows",
@@ -40,9 +41,9 @@ py_test(
         "notap",
     ],
     deps = [
-        ":testing",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/autograph/pyct",
-        "@gast_archive//:gast",
+        ":codegen",
+        #internal proto upb dep
+        "//third_party/py/numpy",
+        "//tensorflow/python/platform:client_testlib",
     ],
 )

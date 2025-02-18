@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """A Transformed Distribution class."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.python.framework import constant_op
@@ -24,6 +20,7 @@ from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import check_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
@@ -91,7 +88,7 @@ def _pick_scalar_condition(pred, cond_true, cond_false):
   # tf.select even though we use tf.select to implement it.
   pred_ = _static_value(pred)
   if pred_ is None:
-    return array_ops.where(pred, cond_true, cond_false)
+    return array_ops.where_v2(pred, cond_true, cond_false)
   return cond_true if pred_ else cond_false
 
 
@@ -167,7 +164,7 @@ class TransformedDistribution(distribution_lib.Distribution):
   distribution:
 
   ```python
-  ds = tf.contrib.distributions
+  ds = tfp.distributions
   log_normal = ds.TransformedDistribution(
     distribution=ds.Normal(loc=0., scale=1.),
     bijector=ds.bijectors.Exp(),
@@ -177,21 +174,21 @@ class TransformedDistribution(distribution_lib.Distribution):
   A `LogNormal` made from callables:
 
   ```python
-  ds = tf.contrib.distributions
+  ds = tfp.distributions
   log_normal = ds.TransformedDistribution(
     distribution=ds.Normal(loc=0., scale=1.),
     bijector=ds.bijectors.Inline(
       forward_fn=tf.exp,
-      inverse_fn=tf.log,
+      inverse_fn=tf.math.log,
       inverse_log_det_jacobian_fn=(
-        lambda y: -tf.reduce_sum(tf.log(y), axis=-1)),
+        lambda y: -tf.reduce_sum(tf.math.log(y), axis=-1)),
     name="LogNormalTransformedDistribution")
   ```
 
   Another example constructing a Normal from a StandardNormal:
 
   ```python
-  ds = tf.contrib.distributions
+  ds = tfp.distributions
   normal = ds.TransformedDistribution(
     distribution=ds.Normal(loc=0., scale=1.),
     bijector=ds.bijectors.Affine(
@@ -209,7 +206,7 @@ class TransformedDistribution(distribution_lib.Distribution):
   multivariate Normal as a `TransformedDistribution`.
 
   ```python
-  ds = tf.contrib.distributions
+  ds = tfp.distributions
   # We will create two MVNs with batch_shape = event_shape = 2.
   mean = [[-1., 0],      # batch:0
           [0., 1]]       # batch:1
@@ -434,7 +431,8 @@ class TransformedDistribution(distribution_lib.Distribution):
     lp_on_fibers = [
         self._finish_log_prob_for_one_fiber(y, x_i, ildj_i, event_ndims)
         for x_i, ildj_i in zip(x, ildj)]
-    return math_ops.reduce_logsumexp(array_ops.stack(lp_on_fibers), axis=0)
+    return math_ops.reduce_logsumexp(
+        array_ops_stack.stack(lp_on_fibers), axis=0)
 
   def _finish_log_prob_for_one_fiber(self, y, x, ildj, event_ndims):
     """Finish computation of log_prob on one element of the inverse image."""

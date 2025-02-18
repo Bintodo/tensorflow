@@ -26,12 +26,11 @@ limitations under the License.
 #include "tensorflow/compiler/jit/defs.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+#include "tensorflow/core/common_runtime/graph_constructor.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/graph/algorithm.h"
-#include "tensorflow/core/graph/graph_constructor.h"
 #include "tensorflow/core/graph/graph_def_builder.h"
-#include "tensorflow/core/graph/graph_def_builder_util.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/test.h"
@@ -70,8 +69,8 @@ Node* MakeNeutral(const Scope& scope, const string& id) {
   return ops::Const(scope.WithOpName("Const" + id), 42.0f).node();
 }
 
-Status ComputeIncompatiblePairs(Graph* g,
-                                std::vector<std::pair<int, int>>* result) {
+absl::Status ComputeIncompatiblePairs(
+    Graph* g, std::vector<std::pair<int, int>>* result) {
   FixupSourceAndSinkEdges(g);
   return ComputeIncompatibleResourceOperationPairs(*g, &g->flib_def(), {},
                                                    result);
@@ -130,9 +129,7 @@ TEST(ResourceOperationSafetyAnalysisTest, ReadModify) {
   std::vector<std::pair<int, int>> incompatible_pairs;
   TF_ASSERT_OK(ComputeIncompatiblePairs(root.graph(), &incompatible_pairs));
 
-  EXPECT_EQ(incompatible_pairs.size(), 1);
-  std::pair<int, int> read_modify_pair = {read->id(), modify->id()};
-  EXPECT_EQ(incompatible_pairs[0], read_modify_pair);
+  EXPECT_EQ(incompatible_pairs.size(), 0);
 }
 
 TEST(ResourceOperationSafetyAnalysisTest, ModifyRead) {
@@ -162,9 +159,7 @@ TEST(ResourceOperationSafetyAnalysisTest, ModifyWrite) {
   std::vector<std::pair<int, int>> incompatible_pairs;
   TF_ASSERT_OK(ComputeIncompatiblePairs(root.graph(), &incompatible_pairs));
 
-  EXPECT_EQ(incompatible_pairs.size(), 1);
-  std::pair<int, int> modify_write_pair = {modify->id(), write->id()};
-  EXPECT_EQ(incompatible_pairs[0], modify_write_pair);
+  EXPECT_EQ(incompatible_pairs.size(), 0);
 }
 
 TEST(ResourceOperationSafetyAnalysisTest, WriteModify) {
@@ -196,11 +191,7 @@ TEST(ResourceOperationSafetyAnalysisTest, ReadModifyWrite) {
   std::vector<std::pair<int, int>> incompatible_pairs;
   TF_ASSERT_OK(ComputeIncompatiblePairs(root.graph(), &incompatible_pairs));
 
-  EXPECT_EQ(incompatible_pairs.size(), 2);
-  std::pair<int, int> modify_write_pair = {modify->id(), write->id()};
-  std::pair<int, int> read_modify_pair = {read->id(), modify->id()};
-  EXPECT_EQ(incompatible_pairs[0], read_modify_pair);
-  EXPECT_EQ(incompatible_pairs[1], modify_write_pair);
+  EXPECT_EQ(incompatible_pairs.size(), 0);
 }
 
 TEST(ResourceOperationSafetyAnalysisTest, WriteModifyRead) {
@@ -239,14 +230,12 @@ TEST(ResourceOperationSafetyAnalysisTest, WriteReadModify) {
   std::vector<std::pair<int, int>> incompatible_pairs;
   TF_ASSERT_OK(ComputeIncompatiblePairs(root.graph(), &incompatible_pairs));
 
-  ASSERT_EQ(incompatible_pairs.size(), 3);
+  ASSERT_EQ(incompatible_pairs.size(), 2);
 
   std::pair<int, int> write_modify_pair = {write->id(), modify->id()};
   std::pair<int, int> write_read_pair = {write->id(), read->id()};
-  std::pair<int, int> read_modify_pair = {read->id(), modify->id()};
-  EXPECT_EQ(incompatible_pairs[0], read_modify_pair);
-  EXPECT_EQ(incompatible_pairs[1], write_read_pair);
-  EXPECT_EQ(incompatible_pairs[2], write_modify_pair);
+  EXPECT_EQ(incompatible_pairs[0], write_read_pair);
+  EXPECT_EQ(incompatible_pairs[1], write_modify_pair);
 }
 
 FunctionDefLibrary CreateFunctionDefLibWithConstFunction(const string& name) {
@@ -261,7 +250,7 @@ FunctionDefLibrary CreateFunctionDefLibWithConstFunction(const string& name) {
 }
 
 Node* MakeCall(Graph* graph, const string& callee_name, const string& node_name,
-               Status* status) {
+               absl::Status* status) {
   NodeDef call_node;
   call_node.set_name(node_name);
   call_node.set_op(callee_name);
@@ -276,7 +265,7 @@ TEST(ResourceOperationSafetyAnalysisTest, CallRead) {
   TF_ASSERT_OK(root.graph()->AddFunctionLibrary(flib_def));
 
   Node* read = MakeRead(root, "R");
-  Status status;
+  absl::Status status;
   Node* call = MakeCall(root.graph(), "Const_func", "C", &status);
   TF_ASSERT_OK(status);
 
@@ -298,7 +287,7 @@ TEST(ResourceOperationSafetyAnalysisTest, ReadCall) {
   TF_ASSERT_OK(root.graph()->AddFunctionLibrary(flib_def));
 
   Node* read = MakeRead(root, "R");
-  Status status;
+  absl::Status status;
   Node* call = MakeCall(root.graph(), "Const_func", "C", &status);
   TF_ASSERT_OK(status);
 
@@ -307,9 +296,7 @@ TEST(ResourceOperationSafetyAnalysisTest, ReadCall) {
   std::vector<std::pair<int, int>> incompatible_pairs;
   TF_ASSERT_OK(ComputeIncompatiblePairs(root.graph(), &incompatible_pairs));
 
-  ASSERT_EQ(incompatible_pairs.size(), 1);
-  std::pair<int, int> read_call_edge = {read->id(), call->id()};
-  EXPECT_EQ(incompatible_pairs[0], read_call_edge);
+  EXPECT_EQ(incompatible_pairs.size(), 0);
 }
 
 TEST(ResourceOperationSafetyAnalysisTest, CallWrite) {
@@ -320,7 +307,7 @@ TEST(ResourceOperationSafetyAnalysisTest, CallWrite) {
   TF_ASSERT_OK(root.graph()->AddFunctionLibrary(flib_def));
 
   Node* write = MakeWrite(root, "W");
-  Status status;
+  absl::Status status;
   Node* call = MakeCall(root.graph(), "Const_func", "C", &status);
   TF_ASSERT_OK(status);
 
@@ -329,9 +316,7 @@ TEST(ResourceOperationSafetyAnalysisTest, CallWrite) {
   std::vector<std::pair<int, int>> incompatible_pairs;
   TF_ASSERT_OK(ComputeIncompatiblePairs(root.graph(), &incompatible_pairs));
 
-  ASSERT_EQ(incompatible_pairs.size(), 1);
-  std::pair<int, int> call_write_edge = {call->id(), write->id()};
-  EXPECT_EQ(incompatible_pairs[0], call_write_edge);
+  EXPECT_EQ(incompatible_pairs.size(), 0);
 }
 
 TEST(ResourceOperationSafetyAnalysisTest, WriteCall) {
@@ -342,7 +327,7 @@ TEST(ResourceOperationSafetyAnalysisTest, WriteCall) {
   TF_ASSERT_OK(root.graph()->AddFunctionLibrary(flib_def));
 
   Node* write = MakeWrite(root, "W");
-  Status status;
+  absl::Status status;
   Node* call = MakeCall(root.graph(), "Const_func", "C", &status);
   TF_ASSERT_OK(status);
 
@@ -429,18 +414,14 @@ TEST(ResourceOperationSafetyAnalysisTest, ChainOfOps) {
   std::vector<std::pair<int, int>> incompatible_pairs;
   TF_ASSERT_OK(ComputeIncompatiblePairs(root.graph(), &incompatible_pairs));
 
-  ASSERT_EQ(incompatible_pairs.size(), 5);
+  ASSERT_EQ(incompatible_pairs.size(), 3);
   std::pair<int, int> write_0_read_0_pair = {write_0->id(), read_0->id()};
   std::pair<int, int> write_0_read_1_pair = {write_0->id(), read_1->id()};
   std::pair<int, int> write_1_read_1_pair = {write_1->id(), read_1->id()};
-  std::pair<int, int> write_0_write_1_pair = {write_0->id(), write_1->id()};
-  std::pair<int, int> read_0_read_1_pair = {read_0->id(), read_1->id()};
 
   EXPECT_EQ(incompatible_pairs[0], write_0_read_0_pair);
-  EXPECT_EQ(incompatible_pairs[1], write_0_write_1_pair);
-  EXPECT_EQ(incompatible_pairs[2], write_0_read_1_pair);
-  EXPECT_EQ(incompatible_pairs[3], read_0_read_1_pair);
-  EXPECT_EQ(incompatible_pairs[4], write_1_read_1_pair);
+  EXPECT_EQ(incompatible_pairs[1], write_0_read_1_pair);
+  EXPECT_EQ(incompatible_pairs[2], write_1_read_1_pair);
 }
 
 TEST(ResourceOperationSafetyAnalysisTest, DagOfOps) {

@@ -15,37 +15,40 @@ limitations under the License.
 
 // XLA Stack operators.
 
-#include <limits>
+#include <cstdint>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
-#include "tensorflow/compiler/tf2xla/type_util.h"
-#include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/literal.h"
+#include "tensorflow/compiler/tf2xla/xla_resource.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/status_macros.h"
+#include "xla/tsl/platform/errors.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/partial_tensor_shape.h"
-#include "tensorflow/core/framework/register_types.h"
-#include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/framework/tensor_types.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/kernels/bounds_check.h"
-#include "tensorflow/core/kernels/concat_lib.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
 
-Status GetStackShape(xla::XlaBuilder* builder, XlaResource* resource,
-                     TensorShape* stack_shape) {
+absl::Status GetStackShape(xla::XlaBuilder* builder, XlaResource* resource,
+                           TensorShape* stack_shape) {
   auto shape_or_status = builder->GetShape(resource->value());
   if (!shape_or_status.ok()) {
     return shape_or_status.status();
   }
-  xla::Shape shape = shape_or_status.ValueOrDie();
-  TF_RET_CHECK(xla::ShapeUtil::IsTuple(shape));
+  xla::Shape shape = shape_or_status.value();
+  TF_RET_CHECK(shape.IsTuple());
   return XLAShapeToTensorShape(xla::ShapeUtil::GetTupleElementShape(shape, 0),
                                stack_shape);
 }
@@ -60,8 +63,9 @@ Status GetStackShape(xla::XlaBuilder* builder, XlaResource* resource,
 //
 // TODO(phawkins): consider changing the API of the stack operators to
 // allow an optional element shape at stack construction time.
-Status MaybeInitializeStack(xla::XlaBuilder* builder, XlaResource* resource,
-                            DataType dtype, const TensorShape& elem_shape) {
+absl::Status MaybeInitializeStack(xla::XlaBuilder* builder,
+                                  XlaResource* resource, DataType dtype,
+                                  const TensorShape& elem_shape) {
   if (resource->type() != dtype) {
     return errors::InvalidArgument(
         "Stack dtype is ", DataTypeString(resource->type()),
@@ -69,7 +73,7 @@ Status MaybeInitializeStack(xla::XlaBuilder* builder, XlaResource* resource,
   }
 
   TensorShape stack_shape;
-  stack_shape.AddDim(resource->tensor_array_size());
+  TF_RETURN_IF_ERROR(stack_shape.AddDimWithStatus(resource->max_array_size()));
   stack_shape.AppendShape(elem_shape);
 
   if (!resource->initialized()) {
@@ -86,7 +90,7 @@ Status MaybeInitializeStack(xla::XlaBuilder* builder, XlaResource* resource,
           actual_shape.DebugString());
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 class StackOp : public XlaOpKernel {
@@ -97,10 +101,10 @@ class StackOp : public XlaOpKernel {
   }
 
   void Compile(XlaOpKernelContext* ctx) override {
-    int64 size;
-    OP_REQUIRES_OK(ctx, ctx->ConstantInputAsIntScalar(0, &size));
+    int64_t max_size;
+    OP_REQUIRES_OK(ctx, ctx->ConstantInputAsIntScalar(0, &max_size));
     OP_REQUIRES(
-        ctx, size >= 0,
+        ctx, max_size >= 0,
         errors::InvalidArgument(
             "XLA compilation requires a fixed stack size upper bound. If "
             "you are using tf.while_loop, set the maximum_iterations parameter "
@@ -108,14 +112,9 @@ class StackOp : public XlaOpKernel {
 
     // We defer initializing the Stack resource until we see the first push.
     // Otherwise we do not know the shape of the stack elements.
-    xla::XlaOp value;
-    XlaContext& xc = XlaContext::Get(ctx);
-    XlaResource* resource;
-    string name = absl::StrCat("Stack: ", stack_name_);
-    OP_REQUIRES_OK(
-        ctx, xc.CreateResource(XlaResource::kStack, -1, std::move(name), dtype_,
-                               TensorShape(), value, /*tensor_array_size=*/size,
-                               /*tensor_array_gradients=*/{}, &resource));
+    XlaResource* resource =
+        ctx->xla_context()->AddResource(XlaResource::CreateStack(
+            /*name=*/absl::StrCat("Stack: ", stack_name_), dtype_, max_size));
     ctx->SetResourceOutput(0, resource);
   }
 
@@ -123,10 +122,13 @@ class StackOp : public XlaOpKernel {
   DataType dtype_;
   string stack_name_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(StackOp);
+  StackOp(const StackOp&) = delete;
+  void operator=(const StackOp&) = delete;
 };
 
-REGISTER_XLA_OP(Name("StackV2").CompileTimeConstInput("max_size"), StackOp);
+REGISTER_XLA_OP(
+    Name("StackV2").CompileTimeConstantInput("max_size").CompilationOnly(),
+    StackOp);
 
 class StackPushOp : public XlaOpKernel {
  public:
@@ -149,9 +151,9 @@ class StackPushOp : public XlaOpKernel {
     xla::XlaOp value = ctx->Input(1);
 
     // start_indices of the DynamicUpdateSlice are [index, 0, 0, ..., 0].
-    auto start_indices =
-        xla::Pad(xla::Reshape(index, {1}), xla::ConstantR0<int32>(b, 0),
-                 xla::MakeEdgePaddingConfig({{0, elem_shape.dims()}}));
+    std::vector<xla::XlaOp> start_indices(elem_shape.dims() + 1,
+                                          xla::ConstantR0<int32>(b, 0));
+    start_indices[0] = index;
 
     TensorShape slice_shape = elem_shape;
     slice_shape.InsertDim(0, 1LL);
@@ -170,10 +172,11 @@ class StackPushOp : public XlaOpKernel {
  private:
   DataType dtype_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(StackPushOp);
+  StackPushOp(const StackPushOp&) = delete;
+  void operator=(const StackPushOp&) = delete;
 };
 
-REGISTER_XLA_OP(Name("StackPushV2"), StackPushOp);
+REGISTER_XLA_OP(Name("StackPushV2").CompilationOnly(), StackPushOp);
 
 class StackPopOp : public XlaOpKernel {
  public:
@@ -205,9 +208,9 @@ class StackPopOp : public XlaOpKernel {
     OP_REQUIRES_OK(ctx, resource->SetValue(xla::Tuple(b, {ta, index})));
 
     // start_indices of the DynamicSlice are [index, 0, 0, ..., 0].
-    auto start_indices =
-        xla::Pad(xla::Reshape(index, {1}), xla::ConstantR0<int32>(b, 0),
-                 xla::MakeEdgePaddingConfig({{0, stack_shape.dims() - 1}}));
+    std::vector<xla::XlaOp> start_indices(stack_shape.dims(),
+                                          xla::ConstantR0<int32>(b, 0));
+    start_indices[0] = index;
 
     auto slice_shape = stack_shape.dim_sizes();
     slice_shape[0] = 1LL;
@@ -217,17 +220,19 @@ class StackPopOp : public XlaOpKernel {
     xla::XlaOp read = xla::DynamicSlice(ta, start_indices, slice_shape);
 
     // Remove the leading '1' dimension.
-    std::vector<int64> value_shape(slice_shape.begin() + 1, slice_shape.end());
+    std::vector<int64_t> value_shape(slice_shape.begin() + 1,
+                                     slice_shape.end());
     ctx->SetOutput(0, xla::Reshape(read, value_shape));
   }
 
  private:
   DataType dtype_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(StackPopOp);
+  StackPopOp(const StackPopOp&) = delete;
+  void operator=(const StackPopOp&) = delete;
 };
 
-REGISTER_XLA_OP(Name("StackPopV2"), StackPopOp);
+REGISTER_XLA_OP(Name("StackPopV2").CompilationOnly(), StackPopOp);
 
 class StackCloseOp : public XlaOpKernel {
  public:
@@ -238,10 +243,11 @@ class StackCloseOp : public XlaOpKernel {
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(StackCloseOp);
+  StackCloseOp(const StackCloseOp&) = delete;
+  void operator=(const StackCloseOp&) = delete;
 };
 
-REGISTER_XLA_OP(Name("StackCloseV2"), StackCloseOp);
+REGISTER_XLA_OP(Name("StackCloseV2").CompilationOnly(), StackCloseOp);
 
 }  // anonymous namespace
 }  // namespace tensorflow

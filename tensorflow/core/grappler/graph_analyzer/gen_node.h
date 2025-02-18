@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <map>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include "tensorflow/core/framework/graph.pb.h"
@@ -57,12 +58,12 @@ class GenNode {
   // links (i.e. edges, connections between nodes) in itself and in the nodes
   // it's linked to (the map itself is unchanged, only the nodes in it are
   // updated).
-  Status ParseInputs(const GenNodeMap* map);
+  absl::Status ParseInputs(const GenNodeMap* map);
 
   // Does the full 2-stage build of the graph. The map should be initially
   // empty. The map keeps pointers to the nodes in source, so the source must
   // not be destroyed before the map.
-  static Status BuildGraphInMap(const GraphDef& source, GenNodeMap* map);
+  static absl::Status BuildGraphInMap(const GraphDef& source, GenNodeMap* map);
 
   // The enrichment that constitutes the point of this class.
 

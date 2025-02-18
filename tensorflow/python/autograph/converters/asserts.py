@@ -14,10 +14,6 @@
 # ==============================================================================
 """Converts assert statements to their corresponding TF calls."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import gast
 
 from tensorflow.python.autograph.core import converter
@@ -33,17 +29,20 @@ class AssertTransformer(converter.Base):
     # Note: The lone tf.Assert call will be wrapped with control_dependencies
     # by side_effect_guards.
     template = """
-      tf.Assert(test, (msg,))
+      ag__.assert_stmt(test, lambda: msg)
     """
 
     if node.msg is None:
       return templates.replace(
-          template, test=node.test, msg=gast.Str('Assertion error'))
-    elif isinstance(node.msg, gast.Str):
+          template,
+          test=node.test,
+          msg=gast.Constant('Assertion error', kind=None))
+    elif isinstance(node.msg, gast.Constant):
       return templates.replace(template, test=node.test, msg=node.msg)
     else:
       raise NotImplementedError('can only convert string messages for now.')
 
 
 def transform(node, ctx):
-  return AssertTransformer(ctx).visit(node)
+  node = AssertTransformer(ctx).visit(node)
+  return node

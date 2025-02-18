@@ -17,29 +17,33 @@ limitations under the License.
 
 #include <string>
 
-#include "tensorflow/core/lib/core/error_codes.pb.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/protobuf/error_codes.pb.h"
 
 namespace tensorflow {
 namespace wav {
 
 // These are defined in wav_io.cc, and the signatures are here so we don't have
 // to expose them in the public header.
-Status ExpectText(const string& data, const string& expected_text, int* offset);
-Status ReadString(const string& data, int expected_length, string* value,
-                  int* offset);
+absl::Status ExpectText(const string& data, const string& expected_text,
+                        int* offset);
+absl::Status ReadString(const string& data, int expected_length, string* value,
+                        int* offset);
 
 TEST(WavIO, BadArguments) {
   float audio[] = {0.0f, 0.1f, 0.2f, 0.3f, 0.4f, 0.5f};
-  string result;
+  tstring result;
 
   EXPECT_EQ(error::INVALID_ARGUMENT,
             EncodeAudioAsS16LEWav(nullptr, 44100, 2, 3, &result).code());
-  EXPECT_EQ(error::INVALID_ARGUMENT,
-            EncodeAudioAsS16LEWav(audio, 44100, 2, 3, nullptr).code());
+  TF_EXPECT_OK(EncodeAudioAsS16LEWav(nullptr, 44100, 2, 0, &result));
+
+  EXPECT_EQ(
+      error::INVALID_ARGUMENT,
+      EncodeAudioAsS16LEWav(audio, 44100, 2, 3, (tstring*)nullptr).code());
 
   const size_t kuint32max_plus_one = static_cast<size_t>(kuint32max) + 1;
   const size_t kuint16max_plus_one = static_cast<size_t>(kuint16max) + 1;
@@ -49,8 +53,6 @@ TEST(WavIO, BadArguments) {
             EncodeAudioAsS16LEWav(audio, 0, 2, 3, &result).code());
   EXPECT_EQ(error::INVALID_ARGUMENT,
             EncodeAudioAsS16LEWav(audio, 44100, 0, 3, &result).code());
-  EXPECT_EQ(error::INVALID_ARGUMENT,
-            EncodeAudioAsS16LEWav(audio, 44100, 2, 0, &result).code());
 
   // Sample rates 2^32 and greater are invalid.
   EXPECT_EQ(
@@ -200,12 +202,12 @@ TEST(WavIO, ChunkSizeOverflow) {
   uint32 decoded_sample_count;
   uint16 decoded_channel_count;
   uint32 decoded_sample_rate;
-  Status decode_status = DecodeLin16WaveAsFloatVector(
+  absl::Status decode_status = DecodeLin16WaveAsFloatVector(
       wav_data_string, &decoded_audio, &decoded_sample_count,
       &decoded_channel_count, &decoded_sample_rate);
   EXPECT_FALSE(decode_status.ok());
-  EXPECT_TRUE(str_util::StrContains(decode_status.error_message(), "too large"))
-      << decode_status.error_message();
+  EXPECT_TRUE(absl::StrContains(decode_status.message(), "too large"))
+      << decode_status.message();
 }
 
 TEST(WavIO, IncrementOffset) {
@@ -247,7 +249,7 @@ TEST(WavIO, ExpectText) {
   EXPECT_EQ(8, offset);
 
   offset = 0;
-  Status expect_status = ExpectText(test_string, "Unexpected", &offset);
+  absl::Status expect_status = ExpectText(test_string, "Unexpected", &offset);
   EXPECT_FALSE(expect_status.ok());
 
   offset = 0;
@@ -275,7 +277,7 @@ TEST(WavIO, ReadString) {
   EXPECT_EQ("pected", read_value);
   EXPECT_EQ(8, offset);
 
-  Status read_status = ReadString(test_string, 3, &read_value, &offset);
+  absl::Status read_status = ReadString(test_string, 3, &read_value, &offset);
   EXPECT_FALSE(read_status.ok());
 }
 
@@ -284,7 +286,7 @@ TEST(WavIO, ReadValueInt8) {
   string test_string(test_data.begin(), test_data.end());
 
   int offset = 0;
-  int8 read_value;
+  int8_t read_value;
   TF_EXPECT_OK(ReadValue(test_string, &read_value, &offset));
   EXPECT_EQ(0, read_value);
   EXPECT_EQ(1, offset);
@@ -301,7 +303,7 @@ TEST(WavIO, ReadValueInt8) {
   EXPECT_EQ(-128, read_value);
   EXPECT_EQ(4, offset);
 
-  Status read_status = ReadValue(test_string, &read_value, &offset);
+  absl::Status read_status = ReadValue(test_string, &read_value, &offset);
   EXPECT_FALSE(read_status.ok());
 }
 
@@ -327,7 +329,7 @@ TEST(WavIO, ReadValueUInt8) {
   EXPECT_EQ(128, read_value);
   EXPECT_EQ(4, offset);
 
-  Status read_status = ReadValue(test_string, &read_value, &offset);
+  absl::Status read_status = ReadValue(test_string, &read_value, &offset);
   EXPECT_FALSE(read_status.ok());
 }
 
@@ -342,7 +344,7 @@ TEST(WavIO, ReadValueInt16) {
   string test_string(test_data.begin(), test_data.end());
 
   int offset = 0;
-  int16 read_value;
+  int16_t read_value;
   TF_EXPECT_OK(ReadValue(test_string, &read_value, &offset));
   EXPECT_EQ(0, read_value);
   EXPECT_EQ(2, offset);
@@ -363,7 +365,7 @@ TEST(WavIO, ReadValueInt16) {
   EXPECT_EQ(-32768, read_value);
   EXPECT_EQ(10, offset);
 
-  Status read_status = ReadValue(test_string, &read_value, &offset);
+  absl::Status read_status = ReadValue(test_string, &read_value, &offset);
   EXPECT_FALSE(read_status.ok());
 }
 
@@ -399,7 +401,7 @@ TEST(WavIO, ReadValueUInt16) {
   EXPECT_EQ(32768, read_value);
   EXPECT_EQ(10, offset);
 
-  Status read_status = ReadValue(test_string, &read_value, &offset);
+  absl::Status read_status = ReadValue(test_string, &read_value, &offset);
   EXPECT_FALSE(read_status.ok());
 }
 
@@ -414,7 +416,7 @@ TEST(WavIO, ReadValueInt32) {
   string test_string(test_data.begin(), test_data.end());
 
   int offset = 0;
-  int32 read_value;
+  int32_t read_value;
   TF_EXPECT_OK(ReadValue(test_string, &read_value, &offset));
   EXPECT_EQ(0, read_value);
   EXPECT_EQ(4, offset);
@@ -435,7 +437,7 @@ TEST(WavIO, ReadValueInt32) {
   EXPECT_EQ(-1, read_value);
   EXPECT_EQ(20, offset);
 
-  Status read_status = ReadValue(test_string, &read_value, &offset);
+  absl::Status read_status = ReadValue(test_string, &read_value, &offset);
   EXPECT_FALSE(read_status.ok());
 }
 
@@ -471,7 +473,7 @@ TEST(WavIO, ReadValueUInt32) {
   EXPECT_EQ(4294967295, read_value);
   EXPECT_EQ(20, offset);
 
-  Status read_status = ReadValue(test_string, &read_value, &offset);
+  absl::Status read_status = ReadValue(test_string, &read_value, &offset);
   EXPECT_FALSE(read_status.ok());
 }
 

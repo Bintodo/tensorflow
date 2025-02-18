@@ -15,15 +15,18 @@ limitations under the License.
 
 // XLA-specific reverse Op.
 
-#include "tensorflow/compiler/tf2xla/type_util.h"
-#include "tensorflow/compiler/tf2xla/xla_helpers.h"
+#include <cstdint>
+#include <vector>
+
+#include "absl/container/inlined_vector.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/literal.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/literal.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/register_types.h"
-#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 namespace {
@@ -51,14 +54,11 @@ class ReverseOp : public XlaOpKernel {
     }
     // XlaBuilder::Rev() requires concrete values for dimensions arg.
     xla::Literal lax;
-    OP_REQUIRES_OK(ctx, ctx->ConstantInputReshaped(1, {x_shape.dims()}, &lax));
-    std::vector<bool> revdims(x_shape.dims());
-    std::copy(lax.data<bool>().begin(), lax.data<bool>().end(),
-              revdims.begin());
-    std::vector<int64> dimensions;
+    OP_REQUIRES_OK(ctx, ctx->ConstantInput(1, &lax));
 
+    std::vector<int64_t> dimensions;
     for (int d = 0; d < x_shape.dims(); ++d) {
-      if (revdims[d]) {
+      if (lax.Get<bool>({d})) {
         dimensions.push_back(d);
       }
     }
@@ -67,7 +67,7 @@ class ReverseOp : public XlaOpKernel {
   }
 };
 
-REGISTER_XLA_OP(Name("Reverse").CompileTimeConstInput("dims"), ReverseOp);
+REGISTER_XLA_OP(Name("Reverse").CompileTimeConstantInput("dims"), ReverseOp);
 
 class ReverseV2Op : public XlaOpKernel {
  public:
@@ -92,7 +92,7 @@ class ReverseV2Op : public XlaOpKernel {
       return;
     }
     // XlaBuilder::Rev() requires concrete values for dimensions arg.
-    std::vector<int64> axes;
+    std::vector<int64_t> axes;
     OP_REQUIRES_OK(ctx, ctx->ConstantInputAsIntVector(1, &axes));
 
     // witnessed_axes is used to ensure that the same axis is not marked to be
@@ -119,7 +119,8 @@ class ReverseV2Op : public XlaOpKernel {
   }
 };
 
-REGISTER_XLA_OP(Name("ReverseV2").CompileTimeConstInput("axis"), ReverseV2Op);
+REGISTER_XLA_OP(Name("ReverseV2").CompileTimeConstantInput("axis"),
+                ReverseV2Op);
 
 }  // namespace
 }  // namespace tensorflow

@@ -15,26 +15,69 @@ limitations under the License.
 
 // XLA specific pooling ops.
 
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "absl/container/inlined_vector.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "tensorflow/compiler/tf2xla/mlir_xla_op_kernel.h"
+#include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/arithmetic.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/lib/pooling.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/client/xla_computation.h"
-#include "tensorflow/compiler/xla/literal.h"
-#include "tensorflow/compiler/xla/util.h"
+#include "xla/hlo/builder/lib/arithmetic.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/lib/pooling.h"
+#include "xla/hlo/builder/padding.h"
+#include "xla/hlo/builder/value_inference.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/register_types.h"
-#include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/bounds_check.h"
-#include "tensorflow/core/kernels/conv_grad_ops.h"
-#include "tensorflow/core/kernels/pooling_ops_common.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/util/determinism.h"
+#include "tensorflow/core/util/padding.h"
+#include "tensorflow/core/util/tensor_format.h"
 
 namespace tensorflow {
 namespace {
+
+template <typename T>
+static absl::Status ValidateKernelSizes(const T& ksizes) {
+  for (size_t i = 0; i < ksizes.size(); ++i) {
+    if (ksizes[i] <= 0) {
+      return errors::InvalidArgument(
+          "Sliding window ksize field for dimension ", i,
+          " must be positive but is ", ksizes[i]);
+    }
+  }
+  return absl::OkStatus();
+}
+
+template <typename T>
+static absl::Status ValidateStrides(const T& strides) {
+  for (size_t i = 0; i < strides.size(); ++i) {
+    if (strides[i] <= 0) {
+      return errors::InvalidArgument(
+          "Sliding window stride field for dimension ", i,
+          " must be positive but is ", strides[i]);
+    }
+  }
+  return absl::OkStatus();
+}
 
 // Superclass of pooling ops.
 class PoolingOp : public XlaOpKernel {
@@ -64,6 +107,9 @@ class PoolingOp : public XlaOpKernel {
     }
     Padding padding;
     OP_REQUIRES_OK(ctx, ctx->GetAttr("padding", &padding));
+    OP_REQUIRES(ctx, padding != EXPLICIT,
+                errors::Unimplemented(
+                    "XLA does not support pooling ops with explicit padding."));
     padding_ = (padding == VALID) ? xla::Padding::kValid : xla::Padding::kSame;
 
     OP_REQUIRES_OK(
@@ -73,58 +119,62 @@ class PoolingOp : public XlaOpKernel {
   int num_dims() const { return num_spatial_dims_ + 2; }
 
  protected:
-  xla::StatusOr<std::vector<int64>> GetKernelSize(XlaOpKernelContext* ctx) {
+  absl::StatusOr<std::vector<int64_t>> GetKernelSize(XlaOpKernelContext* ctx) {
+    std::vector<int64_t> ksize;
     if (ctx->num_inputs() == 1) {
-      return ksize_;
+      ksize = ksize_;
+    } else {
+      const TensorShape ksize_shape = ctx->InputShape(1);
+      // Validate input sizes.
+      if (!TensorShapeUtils::IsVector(ksize_shape)) {
+        return errors::InvalidArgument("ksize must be a vector, not shape ",
+                                       ksize_shape.DebugString());
+      }
+      if (ksize_shape.num_elements() != num_dims()) {
+        return errors::InvalidArgument(
+            "Sliding window ksize field must "
+            "specify ",
+            num_dims(), " dimensions");
+      }
+      auto status = ctx->ConstantInputAsIntVector(1, &ksize);
+      if (!status.ok()) {
+        return status;
+      }
     }
-    const TensorShape ksize_shape = ctx->InputShape(1);
-    // Validate input sizes.
-    if (!TensorShapeUtils::IsVector(ksize_shape)) {
-      return errors::InvalidArgument("ksize must be a vector, not shape ",
-                                     ksize_shape.DebugString());
-    }
-    if (ksize_shape.num_elements() != num_dims()) {
-      return errors::InvalidArgument(
-          "Sliding window ksize field must "
-          "specify ",
-          num_dims(), " dimensions");
-    }
-    std::vector<int64> ksize;
-    auto status = ctx->ConstantInputAsIntVector(1, &ksize);
-    if (!status.ok()) {
-      return status;
-    }
+    TF_RETURN_IF_ERROR(ValidateKernelSizes(ksize));
     return ksize;
   }
 
-  xla::StatusOr<std::vector<int64>> GetStride(XlaOpKernelContext* ctx) {
+  absl::StatusOr<std::vector<int64_t>> GetStride(XlaOpKernelContext* ctx) {
+    std::vector<int64_t> stride;
     if (ctx->num_inputs() == 1) {
-      return stride_;
+      stride = stride_;
+    } else {
+      const TensorShape stride_shape = ctx->InputShape(2);
+      // Validate input sizes.
+      if (!TensorShapeUtils::IsVector(stride_shape)) {
+        return errors::InvalidArgument("stride must be a vector, not shape ",
+                                       stride_shape.DebugString());
+      }
+      if (stride_shape.num_elements() != num_dims()) {
+        return errors::InvalidArgument(
+            "Sliding window stride field must "
+            "specify ",
+            num_dims(), " dimensions");
+      }
+      auto status = ctx->ConstantInputAsIntVector(2, &stride);
+      if (!status.ok()) {
+        return status;
+      }
     }
-    const TensorShape stride_shape = ctx->InputShape(2);
-    // Validate input sizes.
-    if (!TensorShapeUtils::IsVector(stride_shape)) {
-      return errors::InvalidArgument("stride must be a vector, not shape ",
-                                     stride_shape.DebugString());
-    }
-    if (stride_shape.num_elements() != num_dims()) {
-      return errors::InvalidArgument(
-          "Sliding window stride field must "
-          "specify ",
-          num_dims(), " dimensions");
-    }
-    std::vector<int64> stride;
-    auto status = ctx->ConstantInputAsIntVector(2, &stride);
-    if (!status.ok()) {
-      return status;
-    }
+    TF_RETURN_IF_ERROR(ValidateStrides(stride));
     return stride;
   }
 
  protected:
   const int num_spatial_dims_;
-  std::vector<int64> ksize_;
-  std::vector<int64> stride_;
+  std::vector<int64_t> ksize_;
+  std::vector<int64_t> stride_;
   xla::Padding padding_;
   TensorFormat data_format_ = FORMAT_NHWC;
   DataType reduction_type_;
@@ -138,7 +188,7 @@ xla::TensorFormat XlaTensorFormat(tensorflow::TensorFormat data_format,
   int num_dims = num_spatial_dims + 2;
   int batch_dimension = GetTensorBatchDimIndex(num_dims, data_format);
   int feature_dimension = GetTensorFeatureDimIndex(num_dims, data_format);
-  absl::InlinedVector<int64, 4> spatial_dimensions(num_spatial_dims);
+  absl::InlinedVector<int64_t, 4> spatial_dimensions(num_spatial_dims);
   for (int spatial_dim = 0; spatial_dim < num_spatial_dims; ++spatial_dim) {
     spatial_dimensions[spatial_dim] =
         GetTensorSpatialDimIndex(num_dims, data_format, spatial_dim);
@@ -152,26 +202,74 @@ class MaxPoolOp : public PoolingOp {
  public:
   MaxPoolOp(OpKernelConstruction* ctx, int num_spatial_dims)
       : PoolingOp(ctx, /*num_spatial_dims=*/num_spatial_dims,
-                  /*reduction_type=*/ctx->input_type(0)) {}
+                  /*reduction_type=*/ctx->input_type(0)) {
+    std::string data_format_str;
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("data_format", &data_format_str));
+    OP_REQUIRES(ctx, FormatFromString(data_format_str, &data_format_),
+                errors::InvalidArgument("Invalid data format"));
+    OP_REQUIRES(ctx, data_format_ != FORMAT_NHWC_VECT_W,
+                errors::Unimplemented(
+                    "XLA does not support the VECT_NHWC_VECT_W data format. "
+                    "Returning unimplemented from MaxPool to keep "
+                    "Tensorflow's intended optimized MaxPool here."));
+  }
 
   void Compile(XlaOpKernelContext* ctx) override {
     auto ksize_or_error = GetKernelSize(ctx);
     OP_REQUIRES_OK(ctx, ksize_or_error.status());
-    std::vector<int64> ksize = ksize_or_error.ValueOrDie();
+    std::vector<int64_t> ksize = ksize_or_error.value();
 
     auto stride_or_error = GetStride(ctx);
     OP_REQUIRES_OK(ctx, stride_or_error.status());
-    std::vector<int64> stride = stride_or_error.ValueOrDie();
+    std::vector<int64_t> stride = stride_or_error.value();
 
-    const TensorShape input_shape = ctx->InputShape(0);
-    OP_REQUIRES(ctx, input_shape.dims() == num_dims(),
+    xla::XlaOp input = ctx->Input(0);
+
+    absl::StatusOr<xla::Shape> input_shape = ctx->builder()->GetShape(input);
+    OP_REQUIRES_OK(ctx, input_shape.status());
+
+    // For VECT_C max-pool ops, transpose to plain NCHW, do the max-pool, and
+    // transpose back.  This isn't necessarily the most efficient algorithm, but
+    // it's ok for starters.
+    std::optional<int64_t> vect_width;
+    if (data_format_ == FORMAT_NCHW_VECT_C) {
+      vect_width = input_shape->dimensions().back();
+      input = xla::Collapse(xla::Transpose(input, {0, 1, 4, 2, 3}), {1, 2});
+
+      input_shape = ctx->builder()->GetShape(input);
+      OP_REQUIRES_OK(ctx, input_shape.status());
+    }
+
+    OP_REQUIRES(ctx, input_shape->dimensions_size() == num_dims(),
                 errors::InvalidArgument("Input to ", type_string(),
                                         " operator must have ", num_dims(),
                                         " dimensions"));
+    auto pooling = xla::MaxPool(
+        input, ksize, stride, padding_,
+        XlaTensorFormat(
+            data_format_ == FORMAT_NCHW_VECT_C ? FORMAT_NCHW : data_format_,
+            input_shape->dimensions_size() - 2));
 
-    auto pooling =
-        xla::MaxPool(ctx->Input(0), ksize, stride, padding_,
-                     XlaTensorFormat(data_format_, input_shape.dims() - 2));
+    if (data_format_ == FORMAT_NCHW_VECT_C) {
+      absl::StatusOr<xla::Shape> result_shape =
+          ctx->builder()->GetShape(pooling);
+      OP_REQUIRES_OK(ctx, result_shape.status());
+
+      int64 num_channels = result_shape->dimensions(1);
+      OP_REQUIRES(
+          ctx, num_channels % *vect_width == 0,
+          errors::FailedPrecondition("Result of NCHW_VECT_C op must have "
+                                     "channels multiple of ",
+                                     *vect_width, ", but was ", num_channels));
+
+      absl::InlinedVector<int64, 5> new_dims(result_shape->dimensions().begin(),
+                                             result_shape->dimensions().end());
+      new_dims[1] /= *vect_width;
+      new_dims.insert(new_dims.begin() + 2, *vect_width);
+      pooling =
+          xla::Transpose(xla::Reshape(pooling, new_dims), {0, 1, 3, 4, 2});
+    }
+
     ctx->SetOutput(0, pooling);
   }
 };
@@ -179,17 +277,12 @@ class MaxPoolOp : public PoolingOp {
 class MaxPool2DOp : public MaxPoolOp {
  public:
   explicit MaxPool2DOp(OpKernelConstruction* ctx)
-      : MaxPoolOp(ctx, /*num_spatial_dims=*/2) {
-    string data_format_str;
-    OP_REQUIRES_OK(ctx, ctx->GetAttr("data_format", &data_format_str));
-    OP_REQUIRES(ctx, FormatFromString(data_format_str, &data_format_),
-                errors::InvalidArgument("Invalid data format"));
-  }
+      : MaxPoolOp(ctx, /*num_spatial_dims=*/2) {}
 };
 REGISTER_XLA_OP(Name("MaxPool"), MaxPool2DOp);
 REGISTER_XLA_OP(Name("MaxPoolV2")
-                    .CompileTimeConstInput("ksize")
-                    .CompileTimeConstInput("strides"),
+                    .CompileTimeConstantInput("ksize")
+                    .CompileTimeConstantInput("strides"),
                 MaxPool2DOp);
 
 class MaxPool3DOp : public MaxPoolOp {
@@ -204,16 +297,21 @@ class AvgPoolOp : public PoolingOp {
   AvgPoolOp(OpKernelConstruction* ctx, int num_spatial_dims)
       : PoolingOp(ctx, /*num_spatial_dims=*/num_spatial_dims,
                   /*reduction_type=*/
-                  XlaHelpers::SumAccumulationType(ctx->input_type(0))) {}
+                  XlaHelpers::SumAccumulationType(ctx->input_type(0))) {
+    string data_format_str;
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("data_format", &data_format_str));
+    OP_REQUIRES(ctx, FormatFromString(data_format_str, &data_format_),
+                errors::InvalidArgument("Invalid data format"));
+  }
 
   void Compile(XlaOpKernelContext* ctx) override {
     auto ksize_or_error = GetKernelSize(ctx);
     OP_REQUIRES_OK(ctx, ksize_or_error.status());
-    std::vector<int64> ksize = ksize_or_error.ValueOrDie();
+    std::vector<int64_t> ksize = ksize_or_error.value();
 
     auto stride_or_error = GetStride(ctx);
     OP_REQUIRES_OK(ctx, stride_or_error.status());
-    std::vector<int64> stride = stride_or_error.ValueOrDie();
+    std::vector<int64_t> stride = stride_or_error.value();
 
     const TensorShape input_shape = ctx->InputShape(0);
     OP_REQUIRES(ctx, input_shape.dims() == num_dims(),
@@ -240,21 +338,11 @@ class AvgPoolOp : public PoolingOp {
 class AvgPool2DOp : public AvgPoolOp {
  public:
   explicit AvgPool2DOp(OpKernelConstruction* ctx)
-      : AvgPoolOp(ctx, /*num_spatial_dims=*/2) {
-    string data_format_str;
-    OP_REQUIRES_OK(ctx, ctx->GetAttr("data_format", &data_format_str));
-    OP_REQUIRES(ctx, FormatFromString(data_format_str, &data_format_),
-                errors::InvalidArgument("Invalid data format"));
-  }
+      : AvgPoolOp(ctx, /*num_spatial_dims=*/2) {}
 };
 REGISTER_XLA_OP(Name("AvgPool"), AvgPool2DOp);
 
-class AvgPool3DOp : public AvgPoolOp {
- public:
-  explicit AvgPool3DOp(OpKernelConstruction* ctx)
-      : AvgPoolOp(ctx, /*num_spatial_dims=*/3) {}
-};
-REGISTER_XLA_OP(Name("AvgPool3D"), AvgPool3DOp);
+REGISTER_XLA_OP(Name("AvgPool3D"), MlirXlaOpKernel);
 
 // The operation to compute MaxPool gradients.
 // It takes three inputs:
@@ -271,6 +359,16 @@ class MaxPoolGradOp : public XlaOpKernel {
       OP_REQUIRES_OK(ctx, ctx->GetAttr("strides", &stride_));
     }
     OP_REQUIRES_OK(ctx, ctx->GetAttr("padding", &padding_));
+    OP_REQUIRES(ctx, padding_ != EXPLICIT,
+                errors::Unimplemented(
+                    "XLA does not support maxpoolgrad with explicit padding."));
+    // When determinism is enabled, the use of SelectAndScatter causes a generic
+    // error to be raised. We raise a more informative error here before
+    // SelectAndScatter is used.
+    OP_REQUIRES(
+        ctx, !tensorflow::OpDeterminismRequired(),
+        errors::Unimplemented("GPU MaxPool gradient ops do not yet have a "
+                              "deterministic XLA implementation."));
   }
 
   int num_dims() const { return num_spatial_dims_ + 2; }
@@ -299,10 +397,12 @@ class MaxPoolGradOp : public XlaOpKernel {
                 errors::InvalidArgument("Sliding window ksize field must "
                                         "specify ",
                                         num_dims(), " dimensions"));
+    OP_REQUIRES_OK(ctx, ValidateKernelSizes(ksize_));
     OP_REQUIRES(ctx, stride_.size() == num_dims(),
                 errors::InvalidArgument("Sliding window strides field must "
                                         "specify ",
                                         num_dims(), " dimensions"));
+    OP_REQUIRES_OK(ctx, ValidateStrides(stride_));
 
     const TensorShape tensor_in_shape = ctx->InputShape(0);
     const TensorShape tensor_out_shape = ctx->InputShape(1);
@@ -324,9 +424,23 @@ class MaxPoolGradOp : public XlaOpKernel {
     // whether this is a good time/space tradeoff.
     auto input = ctx->Input(0);
     auto out_backprop = ctx->Input(2);
-
+    // We ensured padding_ is not EXPLICIT in the constructor.
     xla::Padding xla_padding =
         (padding_ == VALID) ? xla::Padding::kValid : xla::Padding::kSame;
+
+    // Create a MaxPool operation to check the expected resulting shape, and
+    // then throw away the operation because we don't actually need it here.
+    TensorShape expected_out_shape;
+    auto pooling =
+        xla::MaxPool(ctx->Input(0), ksize_, stride_, xla_padding,
+                     XlaTensorFormat(data_format_, tensor_in_shape.dims() - 2));
+    auto status_or_shape = pooling.builder()->GetShape(pooling);
+    OP_REQUIRES_OK(ctx, status_or_shape.status());
+    OP_REQUIRES_OK(ctx, XLAShapeToTensorShape(status_or_shape.value(),
+                                              &expected_out_shape));
+    OP_REQUIRES(ctx, expected_out_shape == out_backprop_shape,
+                errors::Unimplemented("The output dimensions do not match the "
+                                      "other input values."));
 
     xla::PrimitiveType element_type;
     OP_REQUIRES_OK(ctx, DataTypeToPrimitiveType(input_type(2), &element_type));
@@ -342,8 +456,8 @@ class MaxPoolGradOp : public XlaOpKernel {
 
  protected:
   const int num_spatial_dims_;
-  std::vector<int64> ksize_;
-  std::vector<int64> stride_;
+  std::vector<int64_t> ksize_;
+  std::vector<int64_t> stride_;
   Padding padding_;
   TensorFormat data_format_ = FORMAT_NHWC;
 };
@@ -360,16 +474,11 @@ class MaxPool2DGradOp : public MaxPoolGradOp {
 };
 REGISTER_XLA_OP(Name("MaxPoolGrad"), MaxPool2DGradOp);
 REGISTER_XLA_OP(Name("MaxPoolGradV2")
-                    .CompileTimeConstInput("ksize")
-                    .CompileTimeConstInput("strides"),
+                    .CompileTimeConstantInput("ksize")
+                    .CompileTimeConstantInput("strides"),
                 MaxPool2DGradOp);
 
-class MaxPool3DGradOp : public MaxPoolGradOp {
- public:
-  explicit MaxPool3DGradOp(OpKernelConstruction* ctx)
-      : MaxPoolGradOp(ctx, /*num_spatial_dims=*/3) {}
-};
-REGISTER_XLA_OP(Name("MaxPool3DGrad"), MaxPool3DGradOp);
+REGISTER_XLA_OP(Name("MaxPool3DGrad"), MlirXlaOpKernel);
 
 // Average-pooling gradient
 class AvgPoolGradOp : public XlaOpKernel {
@@ -381,22 +490,34 @@ class AvgPoolGradOp : public XlaOpKernel {
                 errors::InvalidArgument("Sliding window ksize field must "
                                         "specify ",
                                         num_dims(), " dimensions"));
+    OP_REQUIRES_OK(ctx, ValidateKernelSizes(ksize_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("strides", &stride_));
     OP_REQUIRES(ctx, stride_.size() == num_dims(),
                 errors::InvalidArgument("Sliding window strides field must "
                                         "specify ",
                                         num_dims(), " dimensions"));
+    OP_REQUIRES_OK(ctx, ValidateStrides(stride_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("padding", &padding_));
+    OP_REQUIRES(ctx, padding_ != EXPLICIT,
+                errors::Unimplemented(
+                    "XLA does not support avgpoolgrad with explicit padding."));
     OP_REQUIRES(ctx, ksize_[0] == 1 && stride_[0] == 1,
                 errors::Unimplemented(
                     "Pooling is not yet supported on the batch dimension."));
+
+    string data_format;
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("data_format", &data_format));
+    OP_REQUIRES(ctx, FormatFromString(data_format, &data_format_),
+                errors::InvalidArgument("Invalid data format"));
   }
 
   int num_dims() const { return num_spatial_dims_ + 2; }
 
   void Compile(XlaOpKernelContext* ctx) override {
     TensorShape gradients_shape;
-    OP_REQUIRES_OK(ctx, ctx->ConstantInputAsShape(0, &gradients_shape));
+    OP_REQUIRES_OK(
+        ctx, ctx->ConstantInputAsShape(0, &gradients_shape,
+                                       xla::ValueInferenceMode::kUpperBound));
 
     const TensorShape out_backprop_shape = ctx->InputShape(1);
 
@@ -411,7 +532,7 @@ class AvgPoolGradOp : public XlaOpKernel {
                                         "-dimensional"));
 
     auto out_backprop = ctx->Input(1);
-    std::vector<int64> stride_int64s(stride_.begin(), stride_.end());
+    std::vector<int64_t> stride_int64s(stride_.begin(), stride_.end());
     xla::Padding xla_padding =
         (padding_ == VALID) ? xla::Padding::kValid : xla::Padding::kSame;
     xla::PrimitiveType xla_reduction_type;
@@ -439,7 +560,7 @@ class AvgPoolGradOp : public XlaOpKernel {
 
  protected:
   const int num_spatial_dims_;
-  std::vector<int64> ksize_;
+  std::vector<int64_t> ksize_;
   std::vector<int32> stride_;
   Padding padding_;
   TensorFormat data_format_ = FORMAT_NHWC;
@@ -448,23 +569,20 @@ class AvgPoolGradOp : public XlaOpKernel {
 class AvgPool2DGradOp : public AvgPoolGradOp {
  public:
   explicit AvgPool2DGradOp(OpKernelConstruction* ctx)
-      : AvgPoolGradOp(ctx, /*num_spatial_dims=*/2) {
-    string data_format;
-    OP_REQUIRES_OK(ctx, ctx->GetAttr("data_format", &data_format));
-    OP_REQUIRES(ctx, FormatFromString(data_format, &data_format_),
-                errors::InvalidArgument("Invalid data format"));
-  }
+      : AvgPoolGradOp(ctx, /*num_spatial_dims=*/2) {}
 };
-REGISTER_XLA_OP(Name("AvgPoolGrad").CompileTimeConstInput("orig_input_shape"),
-                AvgPool2DGradOp);
+REGISTER_XLA_OP(
+    Name("AvgPoolGrad").CompileTimeConstantInput("orig_input_shape"),
+    AvgPool2DGradOp);
 
 class AvgPool3DGradOp : public AvgPoolGradOp {
  public:
   explicit AvgPool3DGradOp(OpKernelConstruction* ctx)
       : AvgPoolGradOp(ctx, /*num_spatial_dims=*/3) {}
 };
-REGISTER_XLA_OP(Name("AvgPool3DGrad").CompileTimeConstInput("orig_input_shape"),
-                AvgPool3DGradOp);
+REGISTER_XLA_OP(
+    Name("AvgPool3DGrad").CompileTimeConstantInput("orig_input_shape"),
+    AvgPool3DGradOp);
 
 class MaxPoolGradGradOp : public XlaOpKernel {
  public:
@@ -475,6 +593,10 @@ class MaxPoolGradGradOp : public XlaOpKernel {
       OP_REQUIRES_OK(ctx, ctx->GetAttr("strides", &stride_));
     }
     OP_REQUIRES_OK(ctx, ctx->GetAttr("padding", &padding_));
+    OP_REQUIRES(
+        ctx, padding_ != EXPLICIT,
+        errors::Unimplemented(
+            "XLA does not support maxpoolgradgrad with explicit padding."));
   }
 
   int num_dims() const { return num_spatial_dims_ + 2; }
@@ -503,10 +625,12 @@ class MaxPoolGradGradOp : public XlaOpKernel {
                 errors::InvalidArgument("Sliding window ksize field must "
                                         "specify ",
                                         num_dims(), " dimensions"));
+    OP_REQUIRES_OK(ctx, ValidateKernelSizes(ksize_));
     OP_REQUIRES(ctx, stride_.size() == num_dims(),
                 errors::InvalidArgument("Sliding window strides field must "
                                         "specify ",
                                         num_dims(), " dimensions"));
+    OP_REQUIRES_OK(ctx, ValidateStrides(stride_));
 
     const TensorShape tensor_in_shape = ctx->InputShape(0);
     const TensorShape tensor_out_shape = ctx->InputShape(1);
@@ -554,10 +678,13 @@ class MaxPoolGradGradOp : public XlaOpKernel {
     auto b = ctx->builder();
 
     auto sixteen = xla::ConstantR0<uint32>(b, 16);
-    // in (f32) -> round to bf16 -> f32 for correct bitwidth -> 16-high-bit u32
+    // in (f32) -> round to 7 mantissa bits (bf16)-> 16-high-bit u32.
+    //
+    // NOTE: Use a ReducePrecision operation instead of a cast to BF16 and back
+    // to F32 since the XLA compiler may ignore narrowing casts to floating
+    // point types if the debug option xla_allow_excess_precision is set.
     auto in_hi = xla::BitcastConvertType(
-        xla::ConvertElementType(xla::ConvertElementType(input, xla::BF16),
-                                xla::F32),
+        xla::ReducePrecision(input, /*exponent_bits=*/8, /*mantissa_bits=*/7),
         xla::U32);
     auto bp_int = xla::BitcastConvertType(out_backprop, xla::U32);
     auto bp_hi = xla::ShiftRightLogical(bp_int, sixteen);
@@ -612,8 +739,8 @@ class MaxPoolGradGradOp : public XlaOpKernel {
 
  protected:
   const int num_spatial_dims_;
-  std::vector<int64> ksize_;
-  std::vector<int64> stride_;
+  std::vector<int64_t> ksize_;
+  std::vector<int64_t> stride_;
   Padding padding_;
   TensorFormat data_format_ = FORMAT_NHWC;
 };
@@ -632,8 +759,8 @@ REGISTER_XLA_OP(Name("MaxPoolGradGrad").TypeConstraint("T", DT_FLOAT),
                 MaxPool2DGradGradOp);
 REGISTER_XLA_OP(Name("MaxPoolGradGradV2")
                     .TypeConstraint("T", DT_FLOAT)
-                    .CompileTimeConstInput("ksize")
-                    .CompileTimeConstInput("strides"),
+                    .CompileTimeConstantInput("ksize")
+                    .CompileTimeConstantInput("strides"),
                 MaxPool2DGradGradOp);
 
 class MaxPool3DGradGradOp : public MaxPoolGradGradOp {

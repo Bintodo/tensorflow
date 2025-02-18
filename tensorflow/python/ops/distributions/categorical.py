@@ -14,10 +14,6 @@
 # ==============================================================================
 """The Categorical distribution class."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
@@ -59,7 +55,7 @@ def _broadcast_cat_event_and_params(event, params, base_dtype):
   return event, params
 
 
-@tf_export("distributions.Categorical")
+@tf_export(v1=["distributions.Categorical"])
 class Categorical(distribution.Distribution):
   """Categorical distribution.
 
@@ -214,9 +210,9 @@ class Categorical(distribution.Distribution):
           self._batch_rank = array_ops.rank(self._logits) - 1
 
       logits_shape = array_ops.shape(self._logits, name="logits_shape")
-      if logits_shape_static[-1].value is not None:
+      if tensor_shape.dimension_value(logits_shape_static[-1]) is not None:
         self._event_size = ops.convert_to_tensor(
-            logits_shape_static[-1].value,
+            logits_shape_static.dims[-1].value,
             dtype=dtypes.int32,
             name="event_size")
       else:
@@ -266,7 +262,7 @@ class Categorical(distribution.Distribution):
     return constant_op.constant([], dtype=dtypes.int32)
 
   def _event_shape(self):
-    return tensor_shape.scalar()
+    return tensor_shape.TensorShape([])
 
   def _sample_n(self, n, seed=None):
     if self.logits.get_shape().ndims == 2:
@@ -311,8 +307,10 @@ class Categorical(distribution.Distribution):
     k, logits = _broadcast_cat_event_and_params(
         k, self.logits, base_dtype=self.dtype.base_dtype)
 
-    return -nn_ops.sparse_softmax_cross_entropy_with_logits(labels=k,
-                                                            logits=logits)
+    # pylint: disable=invalid-unary-operand-type
+    return -nn_ops.sparse_softmax_cross_entropy_with_logits(
+        labels=k,
+        logits=logits)
 
   def _entropy(self):
     return -math_ops.reduce_sum(

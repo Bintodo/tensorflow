@@ -14,16 +14,11 @@
 # ==============================================================================
 """Base classes for probability distributions."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import abc
 import contextlib
 import types
 
 import numpy as np
-import six
 
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
@@ -69,8 +64,7 @@ _DISTRIBUTION_PUBLIC_METHOD_WRAPPERS = [
 ]
 
 
-@six.add_metaclass(abc.ABCMeta)
-class _BaseDistribution(object):
+class _BaseDistribution(metaclass=abc.ABCMeta):
   """Abstract base class needed for resolving subclass hierarchy."""
   pass
 
@@ -212,8 +206,8 @@ class _DistributionMeta(abc.ABCMeta):
     return abc.ABCMeta.__new__(mcs, classname, baseclasses, attrs)
 
 
-@tf_export("distributions.ReparameterizationType")
-class ReparameterizationType(object):
+@tf_export(v1=["distributions.ReparameterizationType"])
+class ReparameterizationType:
   """Instances of this class represent how sampling is reparameterized.
 
   Two static instances exist in the distributions library, signifying
@@ -242,12 +236,12 @@ class ReparameterizationType(object):
     self._rep_type = rep_type
 
   def __repr__(self):
-    return "<Reparameteriation Type: %s>" % self._rep_type
+    return "<Reparameterization Type: %s>" % self._rep_type
 
   def __eq__(self, other):
     """Determine if this `ReparameterizationType` is equal to another.
 
-    Since RepaparameterizationType instances are constant static global
+    Since ReparameterizationType instances are constant static global
     instances, equality checks if two instances' id() values are equal.
 
     Args:
@@ -263,7 +257,7 @@ class ReparameterizationType(object):
 # reparameterized distribution support straight-through gradients with
 # respect to all parameters.
 FULLY_REPARAMETERIZED = ReparameterizationType("FULLY_REPARAMETERIZED")
-tf_export("distributions.FULLY_REPARAMETERIZED").export_constant(
+tf_export(v1=["distributions.FULLY_REPARAMETERIZED"]).export_constant(
     __name__, "FULLY_REPARAMETERIZED")
 
 
@@ -271,13 +265,12 @@ tf_export("distributions.FULLY_REPARAMETERIZED").export_constant(
 # reparameterized distribution do not support straight-through gradients for
 # at least some of the parameters.
 NOT_REPARAMETERIZED = ReparameterizationType("NOT_REPARAMETERIZED")
-tf_export("distributions.NOT_REPARAMETERIZED").export_constant(
+tf_export(v1=["distributions.NOT_REPARAMETERIZED"]).export_constant(
     __name__, "NOT_REPARAMETERIZED")
 
 
-@six.add_metaclass(_DistributionMeta)
-@tf_export("distributions.Distribution")
-class Distribution(_BaseDistribution):
+@tf_export(v1=["distributions.Distribution"])
+class Distribution(_BaseDistribution, metaclass=_DistributionMeta):
   """A generic probability distribution base class.
 
   `Distribution` is a base class for constructing and organizing properties
@@ -462,7 +455,7 @@ class Distribution(_BaseDistribution):
     """
     graph_parents = [] if graph_parents is None else graph_parents
     for i, t in enumerate(graph_parents):
-      if t is None or not tensor_util.is_tensor(t):
+      if t is None or not tensor_util.is_tf_type(t):
         raise ValueError("Graph parent item %d is not a Tensor; %s." % (i, t))
     if not name or name[-1] != "/":  # `name` is not a name scope
       non_unique_name = name or type(self).__name__
@@ -1315,7 +1308,7 @@ class Distribution(_BaseDistribution):
       return static_shape.ndims == 0
     shape = dynamic_shape_fn()
     if (shape.get_shape().ndims is not None and
-        shape.get_shape()[0].value is not None):
+        shape.get_shape().dims[0].value is not None):
       # If the static_shape is correctly written then we should never execute
       # this branch. We keep it just in case there's some unimagined corner
       # case.

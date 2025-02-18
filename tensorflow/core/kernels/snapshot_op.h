@@ -16,13 +16,13 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_SNAPSHOT_OP_H_
 #define TENSORFLOW_CORE_KERNELS_SNAPSHOT_OP_H_
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #define EIGEN_USE_GPU
 #endif
 
 #define EIGEN_USE_THREADS
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 
 namespace tensorflow {

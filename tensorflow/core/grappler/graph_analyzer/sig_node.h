@@ -178,7 +178,7 @@ class SigNode {
   // computed.
   size_t GetTopoHash(int distance) const;
 
-  // The the hash value for the highest computed distance. It must be previously
+  // The hash value for the highest computed distance. It must be previously
   // computed.
   size_t GetHighTopoHash() const {
     CHECK(!topo_hash_.empty());
@@ -256,7 +256,7 @@ struct Signature {
 
   // Using the map, computes the rest of the fields of a signature.
   // Returns an error is the graph is too big.
-  Status Compute();
+  absl::Status Compute();
 
   // Convert the computed signature to a string representation.
   string ToString() const;
